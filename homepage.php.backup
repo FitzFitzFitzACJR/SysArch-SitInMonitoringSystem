@@ -1,0 +1,4812 @@
+﻿<?php
+session_start();
+include("database.php");
+
+// Run database updates for schema changes
+$database_updates_file = file_get_contents('database_updates.sql');
+if ($database_updates_file) {
+    $updates = explode(';', $database_updates_file);
+    foreach ($updates as $sql) {
+        $sql = trim($sql);
+        if (!empty($sql)) {
+            mysqli_query($conn, $sql);
+        }
+    }
+}
+
+// Create necessary tables if they don't exist
+function createTableIfNotExists($conn, $table_name, $query) {
+    $check_table = mysqli_query($conn, "SHOW TABLES LIKE '$table_name'");
+    if (mysqli_num_rows($check_table) == 0) {
+        mysqli_query($conn, $query);
+    }
+}
+
+// Check users table for behavior_points column
+$check_column = mysqli_query($conn, "SHOW COLUMNS FROM users LIKE 'behavior_points'");
+if (mysqli_num_rows($check_column) == 0) {
+    mysqli_query($conn, "ALTER TABLE users ADD COLUMN behavior_points INT DEFAULT 0");
+}
+
+// Create sit_in_sessions table if not exists
+$sit_in_sessions_table = "CREATE TABLE IF NOT EXISTS sit_in_sessions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    student_id VARCHAR(20),
+    purpose VARCHAR(255),
+    laboratory VARCHAR(10),
+    session_start DATETIME DEFAULT CURRENT_TIMESTAMP,
+    session_end DATETIME NULL,
+    status ENUM('active', 'completed', 'cancelled') DEFAULT 'active',
+    duration INT NULL
+)";
+createTableIfNotExists($conn, "sit_in_sessions", $sit_in_sessions_table);
+
+// Modify reservations table if exists to add room column
+$check_room_column = mysqli_query($conn, "SHOW COLUMNS FROM reservations LIKE 'room'");
+if (mysqli_num_rows($check_room_column) == 0) {
+    mysqli_query($conn, "ALTER TABLE reservations ADD COLUMN room VARCHAR(10) AFTER time_slot");
+}
+
+// Create feedback table if not exists
+$feedback_table = "CREATE TABLE IF NOT EXISTS feedback (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    student_id VARCHAR(20),
+    room VARCHAR(10),
+    rating INT NOT NULL,
+    comment TEXT,
+    status ENUM('read', 'unread') DEFAULT 'unread',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)";
+createTableIfNotExists($conn, "feedback", $feedback_table);
+
+// Create attendance_leaderboard table if not exists
+$leaderboard_table = "CREATE TABLE IF NOT EXISTS attendance_leaderboard (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    student_id VARCHAR(20),
+    attendance_count INT DEFAULT 0,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)";
+createTableIfNotExists($conn, "attendance_leaderboard", $leaderboard_table);
+
+// Create announcements table if not exists
+$announcements_table = "CREATE TABLE IF NOT EXISTS announcements (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(100),
+    content TEXT,
+    date_posted TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    posted_by VARCHAR(20),
+    status ENUM('active', 'inactive') DEFAULT 'active'
+)";
+createTableIfNotExists($conn, "announcements", $announcements_table);
+
+// Create points_log table if not exists
+$points_log_table = "CREATE TABLE IF NOT EXISTS points_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    student_id VARCHAR(20),
+    points_added INT,
+    reason TEXT,
+    sessions_added INT,
+    added_by VARCHAR(20),
+    added_on DATETIME DEFAULT CURRENT_TIMESTAMP
+)";
+createTableIfNotExists($conn, "points_log", $points_log_table);
+
+// Add a new table for lab resources
+$lab_resources_table = "CREATE TABLE lab_resources (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    link VARCHAR(512) NOT NULL,
+    description TEXT,
+    status ENUM('active', 'inactive') DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)";
+
+createTableIfNotExists($conn, "lab_resources", $lab_resources_table);
+
+// Get some statistics for admin dashboard
+$total_students_query = "SELECT COUNT(*) as count FROM users WHERE idno != '00'";
+$total_students_result = mysqli_query($conn, $total_students_query);
+$total_students = mysqli_fetch_assoc($total_students_result)['count'];
+
+$active_sessions_query = "SELECT COUNT(*) as count FROM sit_in_sessions WHERE status = 'active'";
+$active_sessions_result = mysqli_query($conn, $active_sessions_query);
+$active_sessions = mysqli_fetch_assoc($active_sessions_result)['count'];
+
+$total_sessions_query = "SELECT COUNT(*) as count FROM sit_in_sessions";
+$total_sessions_result = mysqli_query($conn, $total_sessions_query);
+$total_sessions = mysqli_fetch_assoc($total_sessions_result)['count'];
+
+$pending_reservations_query = "SELECT COUNT(*) as count FROM reservations WHERE status = 'pending'";
+$pending_reservations_result = mysqli_query($conn, $pending_reservations_query);
+$pending_reservations = mysqli_fetch_assoc($pending_reservations_result)['count'];
+
+// Map course codes to full names
+$courses = [
+    1 => "BSIT",
+    2 => "BSA",
+    3 => "BSCS",
+    4 => "BSCRIM"
+];
+
+// Check if user is logged in
+if (!isset($_SESSION['user'])) {
+    header("Location: index.php");
+    exit();
+}
+
+// Display success message if set
+if (isset($_SESSION['message'])) {
+    echo "<script>alert('" . $_SESSION['message'] . "');</script>";
+    unset($_SESSION['message']);
+}
+
+// Fetch user data from the database
+if (isset($_SESSION['idno'])) {
+    $idno = $_SESSION['idno'];
+    $query = "SELECT * FROM users WHERE idno='$idno'";
+    $result = mysqli_query($conn, $query);
+
+    if ($result && mysqli_num_rows($result) > 0) {
+        $user = mysqli_fetch_assoc($result);    
+    } else {
+        die("User not found in the database.");
+    }
+} else {
+    die("User ID not set in session.");
+}
+
+// Map course codes to full names
+$user['course_name'] = $courses[$user['course']] ?? "Unknown";
+
+// Pagination settings
+$limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10; // Default limit
+$page = isset($_GET['page']) ? (int)$_GET['page'] : 1; // Default page
+$offset = ($page - 1) * $limit;
+
+// Fetch total number of students
+$total_query = "SELECT COUNT(*) as total FROM users WHERE idno != '00'";
+$total_result = mysqli_query($conn, $total_query);
+$total_row = mysqli_fetch_assoc($total_result);
+$total_students = $total_row['total'];
+
+// Fetch students with limit and offset
+$query = "SELECT * FROM users WHERE idno != '00' ORDER BY lastname ASC LIMIT $offset, $limit";
+$result = mysqli_query($conn, $query);
+
+// Calculate total pages
+$total_pages = ceil($total_students / $limit);
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CCS SIT-IN MONITORING SYSTEM</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Add Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+    <!-- Add Computer Control JS -->
+    <script src="computer_control.js"></script>
+    
+    <script>
+        // Global navigation functions for student dashboard
+        function showStudentProfile() {
+            hideAllStudentSections();
+            const profileSection = document.getElementById('profile-section');
+            if (profileSection) {
+                profileSection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        // Check if it's a student page and add class
+        <?php if (!isset($_SESSION['is_admin']) || !$_SESSION['is_admin']): ?>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add student-page class to body for student pages
+            document.body.classList.add('student-page');
+        });
+        <?php endif; ?>
+        
+        // Check for session flag to open Computer Control modal
+        document.addEventListener('DOMContentLoaded', function() {
+            <?php if (isset($_SESSION['open_computer_control']) && $_SESSION['open_computer_control']): ?>
+                // Open Computer Control modal
+                setTimeout(function() {
+                    openComputerControlModal();
+                    // Clear the flag
+                    <?php unset($_SESSION['open_computer_control']); ?>
+                }, 500);
+            <?php endif; ?>
+        });
+        
+        function showStudentSitInRules() {
+            hideAllStudentSections();
+            const rulesSection = document.getElementById('rules');
+            if (rulesSection) {
+                rulesSection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        function showStudentLabRules() {
+            hideAllStudentSections();
+            const labRulesSection = document.getElementById('lab-rules');
+            if (labRulesSection) {
+                labRulesSection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        function showStudentHistory() {
+            hideAllStudentSections();
+            const historySection = document.getElementById('history');
+            if (historySection) {
+                historySection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        function showStudentReservation() {
+            hideAllStudentSections();
+            const reservationSection = document.getElementById('reservation');
+            if (reservationSection) {
+                reservationSection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        function showStudentLabResources() {
+            hideAllStudentSections();
+            const labResourcesSection = document.getElementById('student-lab-resources');
+            if (labResourcesSection) {
+                labResourcesSection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        function showStudentFeedback() {
+            hideAllStudentSections();
+            const feedbackSection = document.getElementById('feedback');
+            if (feedbackSection) {
+                feedbackSection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        function showStudentLabSchedules() {
+            hideAllStudentSections();
+            const labSchedulesSection = document.getElementById('lab-schedules');
+            if (labSchedulesSection) {
+                labSchedulesSection.style.display = 'block';
+            }
+            return false;
+        }
+        
+        function hideAllStudentSections() {
+            const sections = [
+                'profile-section', 'rules', 'lab-rules', 'history', 
+                'reservation', 'student-lab-resources', 'feedback', 'lab-schedules'
+            ];
+            
+            sections.forEach(id => {
+                const section = document.getElementById(id);
+                if (section) {
+                    section.style.display = 'none';
+                }
+            });
+        }
+    </script>
+    
+    <style>
+        /* Global styles */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background-color: #E0B0FF;
+            overflow-x: hidden;
+        }
+
+        /* Global Back Button */
+        .back-to-profile {
+            position: relative;
+            display: inline-block;
+            background-color: #E0B0FF;
+            color: #333;
+            padding: 8px 15px;
+            margin-bottom: 15px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-weight: 600;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            font-size: 14px;
+            transition: all 0.3s ease;
+            z-index: 10;
+        }
+
+        .back-to-profile:hover {
+            background-color: #C690FF;
+            transform: translateY(-2px);
+            color: white;
+        }
+
+        .back-to-profile:before {
+            content: "←";
+            margin-right: 5px;
+            font-size: 18px;
+        }
+
+        /* General Styles */
+        body {
+            margin: 0;
+            font-family: 'Poppins', sans-serif;
+            background-color: #E0B0FF;
+        }
+
+        /* Header */
+        .header {
+            position: fixed !important;
+            top: 20px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            display: flex !important;
+            align-items: center !important;
+            z-index: 1000 !important; /* Very high z-index */
+            background-color: transparent !important;
+            width: auto !important;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #fff;
+            margin-left: 15px;
+        }
+
+        /* Logo */
+        .logo {
+            width: 50px;
+            height: 50px;
+            background-color: #E0B0FF;
+            border-radius: 50%;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 250px;
+            background-color: #E0B0FF;
+            height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0; /* Adjusted to reach the top of the screen */
+            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+            transition: width 0.3s;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 20px; /* Adjust padding to move contents to the top */
+        }
+
+        /* Collapsed Sidebar */
+        .sidebar.collapsed {
+            width: 60px;
+        }
+
+        /* Hide everything except the button when collapsed */
+        .sidebar.collapsed h2 span,
+        .sidebar.collapsed ul,
+        .sidebar.collapsed .logout-btn {
+            display: none;
+        }
+
+        /* Toggle Button */
+        .sidebar .toggle-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 10px;
+            position: absolute;
+            top: 0;
+            right: 0;
+        }
+
+        .sidebar h2 {
+            color: white;
+            text-align: center;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            position: relative;
+            margin-top: 0; /* Adjust margin to move contents to the top */
+        }
+
+        .sidebar ul {
+            list-style: none;
+            padding: 0;
+            transition: opacity 0.3s;
+        }
+
+        .sidebar ul li {
+            margin: 15px 0;
+        }
+
+        .sidebar ul li a {
+            color: white;
+            text-decoration: none;
+            font-size: 16px;
+            display: block;
+            padding: 10px;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+            white-space: nowrap; /* Prevent text from wrapping */
+        }
+
+        .sidebar ul li a:hover {
+            background-color: #C690FF;
+        }
+
+        .logout-btn {
+            width: 100%;
+            padding: 10px;
+            background-color: #C690FF;
+            border: none;
+            color: white;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.3s;
+            margin-top: 100px;
+        }
+
+        .logout-btn:hover {
+            background-color: #9966CC;
+        }
+
+        /* Main Content */
+        .content {
+            margin-left: 270px !important;
+            padding: 20px !important;
+            transition: margin-left 0.3s !important;
+            min-height: 100vh !important;
+            margin-top: 300px !important; /* Dramatically increased */
+            display: flex !important;
+            flex-direction: column !important;
+            position: relative !important;
+            top: 100px !important; /* Additional top offset */
+        }
+
+        .content.expanded {
+            margin-left: 80px !important;
+        }
+
+        /* Info Section */
+        .info-section {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 600px;
+            text-align: center;
+        }
+
+        .info-section h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .info-section p {
+            color: #555;
+            margin: 10px 0;
+        }
+
+        .info-section button {
+            background-color: #F7B4C6;
+            border: none;
+            color: white;
+            font-size: 16px;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.3s;
+            margin-top: 15px;
+        }
+
+        .info-section button:hover {
+            background-color: #e58aa3;
+        }
+
+        /* Edit Profile Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 5% auto;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+            width: 80%;
+            max-width: 600px;
+            position: relative;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .close-btn {
+            position: absolute;
+            right: 20px;
+            top: 15px;
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: color 0.3s ease;
+        }
+        
+        .close-btn:hover {
+            color: #333;
+        }
+
+        .edit-profile-btn {
+            background-color: #F7B4C6;
+            color: #333;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .edit-profile-btn:hover {
+            background-color: #E590B8;
+            transform: translateY(-2px);
+            color: white;
+        }
+
+        /* File Input Styling */
+        .file-input-container {
+            position: relative;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .file-input {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .file-label {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #F7B4C6;
+            color: white;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            white-space: nowrap;
+        }
+
+        .file-label:hover {
+            background-color: #e58aa3;
+        }
+
+        .file-name {
+            color: #666;
+            flex-grow: 1;
+        }
+
+        .current-photo {
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        .current-photo p {
+            margin-bottom: 10px;
+            color: #666;
+        }
+
+        .current-photo img {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 2px solid #F7B4C6;
+        }
+
+        /* Admin Dashboard Styles */
+        .admin-dashboard {
+            width: 100%;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .stats-section {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            margin-top: 40px; /* Added margin to move stats section down */
+        }
+
+        .stats-box {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            flex: 1;
+            min-width: 300px;
+        }
+
+        .chart-box {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            flex: 1;
+            min-width: 300px;
+            height: 400px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chart-box canvas {
+            flex: 1;
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #F7B4C6;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        /* Announcements Styles */
+        .announcements-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .announcements-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .new-announcement-btn {
+            display: inline-block;
+            padding: 10px 15px;
+            background-color: #E0B0FF;
+            color: black;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .new-announcement-btn:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        .delete-announcement-btn {
+            display: inline-block;
+            padding: 5px 10px;
+            background-color: #ff4444;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+
+        .delete-announcement-btn:hover {
+            background-color: #cc0000;
+        }
+
+        .announcement-item {
+            border-bottom: 1px solid #eee;
+            padding: 15px 0;
+        }
+
+        .announcement-item:last-child {
+            border-bottom: none;
+        }
+
+        .announcement-item h4 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .announcement-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .delete-btn {
+            background: #ff4444;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        .delete-btn:hover {
+            background: #cc0000;
+        }
+
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            margin-top: 5px;
+            border: 2px solid #F7B4C6;
+            border-radius: 5px;
+            font-size: 16px;
+            resize: vertical;
+        }
+
+        /* Student Dashboard Styles */
+        .student-dashboard {
+            max-width: 1200px !important;
+            margin: 0 auto !important;
+            margin-top: 200px !important; /* Added explicit top margin */
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 30px !important;
+            padding: 20px !important;
+            padding-top: 300px !important; /* Dramatically increased */
+            position: relative !important;
+            top: 100px !important; /* Additional top offset */
+        }
+        
+        /* Position the header with higher z-index */
+        .header {
+            position: fixed; /* Fixed position */
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            z-index: 100; /* Ensure header appears above content */
+        }
+        
+        /* Make sure sections with back-to-profile buttons have enough top space */
+        .history-section, 
+        .lab-resources-container, 
+        .reservation-section, 
+        .feedback-dashboard {
+            padding-top: 300px !important; /* Dramatically increased */
+            margin-top: 100px !important; /* Additional top margin */
+            position: relative !important;
+            top: 100px !important; /* Additional top offset */
+            min-height: 70vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .student-top-row {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        @media (min-width: 992px) {
+            .student-top-row {
+                flex-direction: row;
+            }
+        }
+
+        .student-info-container {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        .student-announcements {
+            flex: 1;
+            min-width: 300px;
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            height: auto; /* Changed from fixed height to auto */
+            max-height: 600px; /* Added max-height instead */
+            overflow-y: auto; /* Keep scrollable */
+        }
+        
+        .announcements-list {
+            max-height: 400px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .info-section {
+            background-color: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            text-align: center;
+            height: 500px; /* Fixed height */
+            overflow-y: auto; /* Enable scrolling */
+        }
+
+        .info-section h3 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 24px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 10;
+        }
+
+        .info-section p {
+            margin: 10px 0;
+        }
+        
+        .user-photo {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            margin: 0 auto 20px;
+            object-fit: cover;
+            border: 3px solid #F7B4C6;
+        }
+        
+        .sessions-box {
+            background-color: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .sessions-count {
+            font-size: 32px;
+            font-weight: bold;
+            color: #F7B4C6;
+            margin: 10px 0;
+        }
+        
+        /* Feedback Form in Dashboard */
+        .feedback-dashboard {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-top: 20px;
+        }
+        
+        .feedback-dashboard h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 22px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+            text-align: center;
+        }
+        
+        .feedback-dashboard .feedback-form {
+            max-width: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .feedback-dashboard .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .feedback-dashboard .form-group.full-width {
+            grid-column: span 2;
+        }
+        
+        .feedback-dashboard textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            resize: vertical;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        
+        .feedback-dashboard textarea.comments {
+            min-height: 60px;
+            rows: 2;
+        }
+        
+        .feedback-dashboard textarea.suggestions {
+            min-height: 40px;
+            rows: 1;
+        }
+        
+        .feedback-dashboard .submit-btn {
+            grid-column: span 2;
+            background-color: #F7B4C6;
+            color: #333;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: block;
+            margin: 10px auto 0;
+            max-width: 200px;
+        }
+
+        /* Improved Reservation Section */
+        .reservation-section {
+            max-width: 800px;
+            margin: 120px auto 0;
+            padding: 20px;
+        }
+        
+        .reservation-container {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        
+        .reservation-content h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 24px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+            text-align: center;
+        }
+        
+        .reservation-form {
+            max-width: 100%;
+        }
+        
+        .back-btn {
+            display: inline-block;
+            margin-bottom: 20px;
+            padding: 8px 16px;
+            background-color: #f5f5f5;
+            color: #333;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        
+        .back-btn:hover {
+            background-color: #e0e0e0;
+        }
+
+        /* Student Announcements Section */
+        .student-announcements h3 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 10;
+        }
+
+        .student-announcements .announcement-item {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .student-announcements .announcement-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+        }
+
+        .student-announcements .announcement-item h4 {
+            color: #333;
+            font-size: 18px;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .student-announcements .announcement-item p {
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 12px;
+            font-size: 15px;
+            flex-grow: 1;
+        }
+
+        .student-announcements .announcement-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #888;
+            font-size: 14px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+            margin-top: auto;
+        }
+
+        .student-announcements .announcement-meta span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .student-announcements .announcement-meta span::before {
+            content: "📅";
+        }
+
+        /* Students Section Styles */
+        .students-section {
+            margin-top: 40px;
+        }
+
+        .section-title {
+            color: white !important;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+
+        .students-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .left-controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        .right-controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        .search-input {
+            padding: 10px;
+            border: 2px solid #F7B4C6;
+            border-radius: 5px;
+        }
+
+        .table-container {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+
+        th {
+            background-color: white !important;
+            color: #F7B4C6 !important;
+            font-weight: 600;
+            padding: 15px;
+            text-align: left;
+            font-size: 15px;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #e58aa3;
+        }
+
+        .actions {
+            text-align: center;
+        }
+
+        .edit-btn, .delete-btn {
+            padding: 5px 10px;
+            border: none;
+            cursor: pointer;
+        }
+
+        .edit-btn {
+            background-color: #F7B4C6;
+            color: white;
+        }
+
+        .delete-btn {
+            background-color: #ff4444;
+            color: white;
+        }
+
+        .add-btn, .reset-btn {
+            padding: 12px 25px;
+            border: none;
+            cursor: pointer;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .add-btn {
+            background-color: #F7B4C6;
+            color: white;
+            box-shadow: 0 2px 4px rgba(247, 180, 198, 0.2);
+        }
+
+        .add-btn:hover {
+            background-color: #f59eb5;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(247, 180, 198, 0.3);
+        }
+
+        .reset-btn {
+            background-color: #ff4444;
+            color: white;
+            box-shadow: 0 2px 4px rgba(255, 68, 68, 0.2);
+        }
+
+        .reset-btn:hover {
+            background-color: #ff3333;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(255, 68, 68, 0.3);
+        }
+
+        .edit-btn, .delete-btn {
+            padding: 8px 16px;
+            border: none;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            margin: 0 5px;
+        }
+
+        .edit-btn {
+            background-color: #F7B4C6;
+            color: white;
+            box-shadow: 0 2px 4px rgba(247, 180, 198, 0.2);
+        }
+
+        .edit-btn:hover {
+            background-color: #f59eb5;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(247, 180, 198, 0.3);
+        }
+
+        .delete-btn {
+            background-color: #ff4444;
+            color: white;
+            box-shadow: 0 2px 4px rgba(255, 68, 68, 0.2);
+        }
+
+        .delete-btn:hover {
+            background-color: #ff3333;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(255, 68, 68, 0.3);
+        }
+
+        /* Announcement Modal Styles */
+        #announcementModal .modal-content {
+            width: 600px;
+            max-width: 90%;
+            padding: 40px;
+            border-radius: 15px;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        #announcementModal .modal-content h3 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 25px;
+            text-align: center;
+            position: relative;
+            padding-bottom: 15px;
+        }
+
+        #announcementModal .modal-content h3:after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100px;
+            height: 3px;
+            background-color: #F7B4C6;
+            border-radius: 2px;
+        }
+
+        #announcementModal textarea {
+            min-height: 200px;
+            margin-bottom: 20px;
+            padding: 15px;
+            font-size: 15px;
+            line-height: 1.5;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        #announcementModal textarea:focus {
+            border-color: #F7B4C6;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(247, 180, 198, 0.2);
+        }
+
+        #announcementModal input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 20px;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            font-size: 15px;
+            transition: all 0.3s ease;
+        }
+
+        #announcementModal input[type="text"]:focus {
+            border-color: #F7B4C6;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(247, 180, 198, 0.2);
+        }
+
+        #announcementModal input[type="submit"] {
+            width: 100%;
+            padding: 12px;
+            background-color: #F7B4C6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 10px;
+        }
+
+        #announcementModal input[type="submit"]:hover {
+            background-color: #C690FF;
+            color: white;
+            transform: translateY(-1px);
+        }
+
+        #announcementModal .close-btn {
+            position: absolute;
+            right: 20px;
+            top: 20px;
+            font-size: 24px;
+            color: #666;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background-color: #f8f9fa;
+        }
+
+        #announcementModal .close-btn:hover {
+            background-color: #F7B4C6;
+            color: white;
+        }
+
+        /* Table Styles */
+        .table-container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            overflow: hidden;
+            margin-top: 20px;
+            border: 2px solid #F7B4C6;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        th {
+            background-color: white !important;
+            color: #F7B4C6 !important;
+            font-weight: 600;
+            padding: 15px;
+            text-align: left;
+            font-size: 15px;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #e58aa3;
+        }
+
+        th:not(:last-child) {
+            border-right: 1px solid #e58aa3;
+        }
+
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            color: #333;
+            font-size: 14px;
+        }
+
+        td:not(:last-child) {
+            border-right: 1px solid #eee;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .actions {
+            text-align: center;
+            white-space: nowrap;
+            background-color: #fff;
+        }
+
+        /* Button Styles */
+        .add-btn, .reset-btn {
+            padding: 12px 25px;
+            border: none;
+            cursor: pointer;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border: 2px solid;
+        }
+
+        .add-btn {
+            background-color: white;
+            color: #F7B4C6;
+            border-color: #F7B4C6;
+            box-shadow: 0 2px 4px rgba(247, 180, 198, 0.2);
+        }
+
+        .add-btn:hover {
+            background-color: #F7B4C6;
+            color: white;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(247, 180, 198, 0.3);
+        }
+
+        .reset-btn {
+            background-color: white;
+            color: #ff4444;
+            border-color: #ff4444;
+            box-shadow: 0 2px 4px rgba(255, 68, 68, 0.2);
+        }
+
+        .reset-btn:hover {
+            background-color: #ff4444;
+            color: white;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(255, 68, 68, 0.3);
+        }
+
+        .edit-btn, .delete-btn {
+            padding: 8px 16px;
+            border: none;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            margin: 0 5px;
+        }
+
+        .edit-btn {
+            background-color: #F7B4C6;
+            color: white;
+            box-shadow: 0 2px 4px rgba(247, 180, 198, 0.2);
+        }
+
+        .edit-btn:hover {
+            background-color: #f59eb5;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(247, 180, 198, 0.3);
+        }
+
+        .delete-btn {
+            background-color: #ff4444;
+            color: white;
+            box-shadow: 0 2px 4px rgba(255, 68, 68, 0.2);
+        }
+
+        .delete-btn:hover {
+            background-color: #ff3333;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(255, 68, 68, 0.3);
+        }
+
+        /* Announcement Modal Styles */
+        #announcementModal .modal-content {
+            border: 2px solid #E0B0FF;
+        }
+
+        #announcementModal .modal-content h3 {
+            color: black;
+            border-bottom: 2px solid #E0B0FF;
+        }
+
+        #announcementModal .modal-content h3:after {
+            background-color: #E0B0FF;
+        }
+
+        #announcementModal textarea {
+            border: 2px solid #E0B0FF;
+            color: black;
+        }
+
+        #announcementModal textarea:focus {
+            border-color: #E0B0FF;
+            box-shadow: 0 0 0 3px rgba(224, 176, 255, 0.2);
+        }
+
+        #announcementModal input[type="text"] {
+            border: 2px solid #E0B0FF;
+            color: black;
+        }
+
+        #announcementModal input[type="text"]:focus {
+            border-color: #E0B0FF;
+            box-shadow: 0 0 0 3px rgba(224, 176, 255, 0.2);
+        }
+
+        #announcementModal input[type="submit"] {
+            background-color: #E0B0FF;
+            color: black;
+            border: none;
+        }
+
+        #announcementModal input[type="submit"]:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        #announcementModal .close-btn {
+            color: black;
+        }
+
+        #announcementModal .close-btn:hover {
+            background-color: #E0B0FF;
+            color: white;
+        }
+
+        /* Table borders */
+        .table-container {
+            border: 2px solid #E0B0FF;
+        }
+
+        table th {
+            border-bottom: 2px solid #E0B0FF !important;
+        }
+
+        td {
+            border-bottom: 1px solid #E0B0FF;
+        }
+
+        /* Form borders */
+        input[type="text"],
+        input[type="email"],
+        input[type="password"],
+        input[type="number"],
+        select,
+        textarea {
+            border: 2px solid #E0B0FF;
+        }
+
+        /* Button borders */
+        .add-btn, 
+        .edit-btn, 
+        .approve-btn {
+            border: 2px solid #8A2BE2;
+        }
+
+        .delete-btn,
+        .reject-btn {
+            border: 2px solid #ff4444;
+        }
+
+        /* Button styles for admin */
+        .add-btn, 
+        .edit-btn, 
+        .approve-btn,
+        .action-btn {
+            background-color: #E0B0FF;
+            border: 2px solid #E0B0FF;
+            color: black;
+        }
+
+        .add-btn:hover, 
+        .edit-btn:hover, 
+        .approve-btn:hover,
+        .action-btn:hover {
+            background-color: #C690FF;
+            border-color: #C690FF;
+            color: white;
+        }
+
+        .delete-btn,
+        .reject-btn {
+            border: 2px solid #ff4444;
+        }
+
+        /* Edit Student links */
+        .edit-icon {
+            color: #E0B0FF;
+        }
+
+        .edit-icon:hover {
+            color: #C690FF;
+        }
+
+        .actions a {
+            color: #E0B0FF;
+        }
+
+        .actions a:hover {
+            color: #C690FF;
+        }
+
+        /* Student edit link */
+        .students-table a {
+            color: #E0B0FF;
+            text-decoration: none;
+        }
+
+        .students-table a:hover {
+            color: #C690FF;
+        }
+
+        /* Admin Edit Modal Colors */
+        #editProfileModal input[type="submit"],
+        #editStudentModal input[type="submit"],
+        #addStudentModal input[type="submit"] {
+            background-color: #E0B0FF;
+            color: black;
+            border: none;
+        }
+
+        #editProfileModal input[type="submit"]:hover,
+        #editStudentModal input[type="submit"]:hover,
+        #addStudentModal input[type="submit"]:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        #editProfileModal .close-btn,
+        #editStudentModal .close-btn,
+        #addStudentModal .close-btn {
+            color: black;
+        }
+
+        #editProfileModal .close-btn:hover,
+        #editStudentModal .close-btn:hover,
+        #addStudentModal .close-btn:hover {
+            background-color: #E0B0FF;
+            color: white;
+        }
+
+        /* Stats Box Styles */
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #E0B0FF !important;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 2px solid #E0B0FF;
+        }
+
+        /* Stats Charts Styles */
+        .stats-charts {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            gap: 20px;
+        }
+
+        .chart-container {
+            flex: 1;
+            background-color: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            height: 300px;
+        }
+
+        .chart-container h3 {
+            text-align: center;
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 18px;
+            color: #333;
+        }
+
+        /* Export Controls */
+        .export-controls {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            gap: 10px;
+        }
+
+        .export-format select {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+
+        /* Info Note Styles */
+        .info-note {
+            background-color: #f8f9fa;
+            border-left: 4px solid #E0B0FF;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            border-radius: 0 4px 4px 0;
+        }
+
+        .info-note p {
+            margin: 0;
+            color: #555;
+        }
+
+        /* Form Note Styles */
+        .form-note {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .form-note p {
+            margin: 0;
+            color: #555;
+        }
+
+        /* Admin section styles */
+        .admin-section {
+            margin-top: 20px;
+        }
+
+        .admin-settings {
+            display: flex;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .settings-card {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            flex: 1;
+        }
+
+        .settings-card h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: black;
+            font-size: 18px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #E0B0FF;
+        }
+
+        .save-btn {
+            background-color: #E0B0FF;
+            color: black;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: background-color 0.3s;
+        }
+
+        .save-btn:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        /* Add Points Modal styles */
+        #addPointsModal .modal-content {
+            max-width: 400px;
+            margin: 10% auto; /* Center the modal */
+        }
+        
+        .form-note {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        
+        .form-note p {
+            margin: 0;
+            color: #555;
+        }
+
+        .dashboard-label {
+            background-color: #E0B0FF;
+            color: black;
+            padding: 5px 15px;
+            border-radius: 15px;
+            font-weight: 600;
+            font-size: 16px;
+            margin-left: 15px;
+            border: 2px solid #C690FF;
+        }
+
+        /* Make buttons in actions column uniform */
+        .edit-btn, .delete-btn, .points-btn {
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 5px;
+            border: none;
+            font-weight: 500;
+        }
+
+        .edit-btn {
+            background-color: #E0B0FF;
+            color: black;
+        }
+
+        .edit-btn:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        .delete-btn {
+            background-color: #ff4444;
+            color: white;
+        }
+
+        .delete-btn:hover {
+            background-color: #cc0000;
+        }
+
+        .points-btn {
+            background-color: #E0B0FF;
+            color: black;
+        }
+
+        .points-btn:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        /* Dropdown for Convert File */
+        .export-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .export-btn {
+            background-color: #E0B0FF;
+            color: black;
+            padding: 10px 15px;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+        }
+
+        .export-btn:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        .export-btn::after {
+            content: "▼";
+            margin-left: 8px;
+            font-size: 12px;
+        }
+
+        .export-dropdown-content {
+            display: none;
+            position: absolute;
+            background-color: white;
+            min-width: 180px;
+            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+            z-index: 1;
+            border-radius: 4px;
+        }
+
+        .export-dropdown-content a {
+            color: black;
+            padding: 12px 16px;
+            text-decoration: none;
+            display: block;
+        }
+
+        .export-dropdown-content a:hover {
+            background-color: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        .export-dropdown:hover .export-dropdown-content {
+            display: block;
+        }
+
+        /* Lab Resources Styles */
+        .resources-table-container {
+            margin-top: 20px;
+            overflow-x: auto;
+        }
+        
+        .status-badge {
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .active-status {
+            background-color: #d1f7c4;
+            color: #2e7d32;
+        }
+        
+        .inactive-status {
+            background-color: #ffcdd2;
+            color: #c62828;
+        }
+        
+        .btn-toggle {
+            background-color: #E0B0FF;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        
+        .btn-delete {
+            background-color: #f44336;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .resource-item {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .resource-item h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        
+        .resource-link {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 8px 15px;
+            background-color: #E0B0FF;
+            color: black;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        
+        .resource-link:hover {
+            background-color: #C690FF;
+            color: white;
+            transform: translateY(-2px);
+        }
+        
+        .no-resources {
+            padding: 20px;
+            text-align: center;
+            color: #666;
+        }
+        
+        .resources-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            padding: 20px 0;
+        }
+
+        /* Sidebar Toggle Button */
+        #toggle-btn {
+            position: absolute;
+            right: 20px;
+            top: 20px;
+            cursor: pointer;
+            font-size: 24px;
+        }
+
+        /* Lab Resources Styles */
+        .table-container {
+            margin-top: 20px;
+            overflow-x: auto;
+        }
+        
+        .status-active {
+            background-color: #d1f7c4;
+            color: #2e7d32;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .status-inactive {
+            background-color: #ffcdd2;
+            color: #c62828;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .action-btn, .delete-btn {
+            background-color: #E0B0FF;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        
+        .delete-btn {
+            background-color: #f44336;
+        }
+        
+        .resource-item {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .resource-item h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        
+        .btn {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 8px 15px;
+            background-color: #E0B0FF;
+            color: black;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        
+        .btn:hover {
+            background-color: #C690FF;
+            color: white;
+            transform: translateY(-2px);
+        }
+        
+        .resources-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            padding: 20px 0;
+        }
+
+        .add-resource-box {
+            display: inline-block;
+            padding: 10px;
+            background-color: #f1f1f1;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        .convert-file-box {
+            display: inline-block;
+            padding: 10px;
+            background-color: #f1f1f1;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        .sit-in-records {
+            margin-top: 20px;
+        }
+
+        /* Add CSS to hide sidebar header text when collapsed */
+        .sidebar.collapsed .sidebar-header h3 {
+            display: none;
+        }
+
+        /* Move student lab resources lower */
+        #lab-resources {
+            margin-top: 40px;
+        }
+
+        /* Convert File Button Box */
+        .convert-file-box {
+            display: inline-block;
+            padding: 10px 15px;
+            background-color: #f1f1f1;
+            border-radius: 8px;
+            margin-top: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border: 1px solid #ddd;
+        }
+
+        /* Ensure convert file button is properly displayed */
+        .convert-file-box button {
+            background-color: #E0B0FF;
+            color: black;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .convert-file-box button:hover {
+            background-color: #C690FF;
+            color: white;
+        }
+
+        /* Section placeholder */
+        .section-placeholder {
+            max-width: 800px;
+            margin: 120px auto 0;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        /* Star Rating Styles */
+        .rating-container {
+            display: flex;
+            flex-direction: row-reverse;
+            justify-content: flex-end;
+        }
+
+        .rating-container input {
+            display: none;
+        }
+
+        .rating-container label {
+            color: #ddd;
+            font-size: 30px;
+            padding: 0 2px;
+            cursor: pointer;
+        }
+
+        .rating-container input:checked ~ label {
+            color: #FFD700;
+        }
+
+        .rating-container label:hover,
+        .rating-container label:hover ~ label {
+            color: #FFD700;
+        }
+
+        /* Feedback Form Styles */
+        .feedback-form-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-top: 20px;
+        }
+
+        .feedback-form {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .feedback-form .form-group {
+            margin-bottom: 15px;
+        }
+
+        .feedback-form label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        .feedback-form select,
+        .feedback-form textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+
+        .feedback-form textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .feedback-form .submit-btn {
+            background-color: #F7B4C6;
+            color: black;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            align-self: flex-start;
+            transition: all 0.3s ease;
+        }
+
+        .feedback-form .submit-btn:hover {
+            background-color: #E590B8;
+            color: white;
+        }
+
+        /* Feedback section styling */
+        #feedback {
+            max-width: 800px;
+            margin: 120px auto 0;
+            padding: 20px;
+        }
+
+        #feedback h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 24px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+        }
+
+        /* Back button styling */
+        #feedback .back-btn {
+            display: inline-block;
+            padding: 8px 15px;
+            background-color: #eee;
+            color: #333;
+            border-radius: 5px;
+            text-decoration: none;
+            margin-bottom: 20px;
+            transition: background-color 0.3s ease;
+        }
+
+        #feedback .back-btn:hover {
+            background-color: #ddd;
+        }
+
+        /* Feedback styles */
+        .feedback-item {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .feedback-item.unread {
+            border-left: 4px solid #F7B4C6;
+            background-color: #fff8f9;
+        }
+
+        .feedback-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+        }
+
+        .student-info h3 {
+            margin: 0 0 5px 0;
+            font-size: 18px;
+        }
+
+        .room-label {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .feedback-meta {
+            text-align: right;
+        }
+
+        .rating {
+            margin-bottom: 5px;
+        }
+
+        .star {
+            font-size: 20px;
+        }
+
+        .star.filled {
+            color: #FFD700;
+        }
+
+        .star.empty {
+            color: #ddd;
+        }
+
+        .date-time {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .feedback-content {
+            margin-bottom: 15px;
+            line-height: 1.5;
+        }
+
+        .feedback-actions {
+            text-align: right;
+        }
+
+        .read-btn {
+            background-color: #F7B4C6;
+            color: black;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .read-btn:hover {
+            background-color: #E590B8;
+            color: white;
+        }
+
+        .no-records {
+            text-align: center;
+            padding: 20px;
+            font-style: italic;
+            color: #777;
+        }
+
+        /* Sit-in History Styles */
+        .history-container {
+            margin-top: 20px;
+        }
+        
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            background: white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .history-table th, 
+        .history-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .history-table th {
+            background-color: #F7B4C6;
+            color: #333;
+            font-weight: bold;
+        }
+        
+        .history-table tr:hover {
+            background-color: #f9f9f9;
+        }
+        
+        .history-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .no-history {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            text-align: center;
+            color: #666;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .no-history p:first-child {
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+        
+        /* Hide feedback links in sidebar */
+        .sidebar ul li a[href="#feedback"] {
+            display: none;
+        }
+
+        /* Global Back Button */
+        .back-to-profile {
+            position: fixed;
+            top: 90px;
+            left: 20px;
+            z-index: 1000;
+            background-color: #F7B4C6;
+            color: #333;
+            padding: 8px 15px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-weight: 600;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .back-to-profile:hover {
+            background-color: #E590B8;
+            transform: translateY(-2px);
+            color: white;
+        }
+
+        .back-to-profile:before {
+            content: "←";
+            margin-right: 5px;
+            font-size: 18px;
+        }
+        
+        /* Student Dashboard Styles */
+        .student-dashboard {
+            max-width: 1200px;
+            margin: 80px auto 0; /* Reduced top margin to prevent overlap with header */
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            padding: 20px;
+        }
+        
+        .student-top-row {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        @media (min-width: 992px) {
+            .student-top-row {
+                flex-direction: row;
+            }
+        }
+
+        .student-info-container {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        .student-announcements {
+            flex: 1;
+            min-width: 300px;
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            height: auto; /* Changed from fixed height to auto */
+            max-height: 600px; /* Added max-height instead */
+            overflow-y: auto; /* Keep scrollable */
+        }
+        
+        .announcements-list {
+            max-height: 400px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .info-section {
+            background-color: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            text-align: center;
+            height: 500px; /* Fixed height */
+            overflow-y: auto; /* Enable scrolling */
+        }
+
+        .info-section h3 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 24px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 10;
+        }
+
+        .info-section p {
+            margin: 10px 0;
+        }
+        
+        .user-photo {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            margin: 0 auto 20px;
+            object-fit: cover;
+            border: 3px solid #F7B4C6;
+        }
+        
+        .sessions-box {
+            background-color: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .sessions-count {
+            font-size: 32px;
+            font-weight: bold;
+            color: #F7B4C6;
+            margin: 10px 0;
+        }
+        
+        /* Feedback Form in Dashboard */
+        .feedback-dashboard {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-top: 20px;
+        }
+        
+        .feedback-dashboard h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 22px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+            text-align: center;
+        }
+        
+        .feedback-dashboard .feedback-form {
+            max-width: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .feedback-dashboard .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .feedback-dashboard .form-group.full-width {
+            grid-column: span 2;
+        }
+        
+        .feedback-dashboard textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            resize: vertical;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        
+        .feedback-dashboard textarea.comments {
+            min-height: 60px;
+            rows: 2;
+        }
+        
+        .feedback-dashboard textarea.suggestions {
+            min-height: 40px;
+            rows: 1;
+        }
+        
+        .feedback-dashboard .submit-btn {
+            grid-column: span 2;
+            background-color: #F7B4C6;
+            color: #333;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: block;
+            margin: 10px auto 0;
+            max-width: 200px;
+        }
+
+        /* Lab Resources Styles */
+        .lab-resources-container {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            width: 80%;
+            max-width: 900px;
+            margin: 20px auto;
+        }
+
+        .resources-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 25px;
+            margin-top: 30px;
+        }
+
+        .resource-item {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .resource-card h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .resource-card p {
+            flex-grow: 1;
+            margin-bottom: 20px;
+        }
+
+        .resource-link {
+            display: inline-block;
+            background-color: #F7B4C6;
+            color: #333;
+            padding: 8px 15px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            margin-top: auto;
+            align-self: flex-start;
+        }
+
+        .resource-link:hover {
+            background-color: #E590B8;
+            color: white;
+            transform: translateY(-2px);
+        }
+
+        /* Custom styles for lab resources section */
+        #lab-resources {
+            min-height: 700px;
+            padding: 30px;
+        }
+        
+        #lab-resources .resource-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 25px;
+            margin-top: 30px;
+            padding: 20px;
+            background: #fff;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            min-height: 500px;
+        }
+        
+        #lab-resources .resource-card {
+            background: #f8f8f8;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            min-height: 250px;
+        }
+        
+        #lab-resources .resource-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+        }
+        
+        #lab-resources .resource-card h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #333;
+            font-size: 20px;
+        }
+        
+        #lab-resources .resource-card p {
+            flex-grow: 1;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+        
+        #lab-resources .resource-link {
+            display: inline-block;
+            background-color: #F7B4C6;
+            color: #333;
+            padding: 10px 20px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            margin-top: auto;
+            align-self: flex-start;
+        }
+        
+        #lab-resources .resource-link:hover {
+            background-color: #E590B8;
+            color: white;
+            transform: translateY(-2px);
+        }
+        
+        /* Custom styles for sit-in history table */
+        #sit-in-history {
+            min-height: 600px;
+            padding: 30px;
+        }
+        
+        #sit-in-history .table-container {
+            margin-top: 20px;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            padding: 20px;
+            overflow-x: auto;
+        }
+        
+        #sit-in-history .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        #sit-in-history .data-table th,
+        #sit-in-history .data-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #f1f1f1;
+        }
+        
+        #sit-in-history .data-table th {
+            background-color: #F7B4C6;
+            color: #333;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        
+        #sit-in-history .data-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        
+        #sit-in-history .data-table tr:hover {
+            background-color: #f1f1f1;
+        }
+
+        /* Info Section - make non-scrollable */
+        .info-section {
+            background-color: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            text-align: center;
+            height: auto !important; /* Changed from fixed height to auto */
+            overflow-y: visible !important; /* Changed from auto to visible */
+            margin-bottom: 20px;
+        }
+
+        /* Student Announcements - still scrollable */
+        .student-announcements {
+            flex: 1;
+            min-width: 300px;
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            height: auto; /* Changed from fixed height to auto */
+            max-height: 600px; /* Added max-height instead */
+            overflow-y: auto; /* Keep scrollable */
+        }
+        
+        /* Feedback Dashboard Styles - fix spacing */
+        .feedback-dashboard {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-top: 0px !important; /* Remove top margin */
+            padding-top: 20px !important; /* Reduce top padding */
+        }
+        
+        /* All sections - adjust padding/margins */
+        .history-section, 
+        .lab-resources-container, 
+        .reservation-section {
+            padding-top: 20px !important; /* Reduced padding */
+            margin-top: 20px !important;
+            position: relative !important;
+        }
+        
+        /* Just for feedback - different spacing */
+        #feedback {
+            padding-top: 20px !important; /* Reduced padding */
+            margin-top: 20px !important;
+        }
+        
+        /* Student Dashboard Styles - adjust for non-scrolling */
+        .student-dashboard {
+            max-width: 1200px !important;
+            margin: 0 auto !important;
+            margin-top: 100px !important;
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 20px !important; /* Reduced gap */
+            padding: 20px !important;
+            position: relative !important;
+        }
+
+        /* Ensure main container is properly styled */
+        #main-content-container {
+            width: 100%;
+            position: relative;
+        }
+        
+        /* Profile section styles */
+        #profile-section {
+            width: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        
+        /* Section placeholder styles */
+        .section-placeholder {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-top: 20px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        /* Reset Button Styles - Improved */
+        .reset-filter-btn {
+            background-color: white;
+            color: #ff4444;
+            border: 2px solid #ff4444;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .reset-filter-btn:hover {
+            background-color: #ff4444;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(255, 68, 68, 0.3);
+        }
+
+        /* Student section styles */
+        .student-dashboard button,
+        .section-placeholder .submit-btn,
+        #profile-section button,
+        #feedback button,
+        #reservation button,
+        #history button,
+        #lab-resources button,
+        #rules button,
+        #lab-rules button {
+            background-color: #F7B4C6 !important;
+            color: white !important;
+            border: none !important;
+        }
+        
+        .student-dashboard button:hover,
+        .section-placeholder .submit-btn:hover,
+        #profile-section button:hover,
+        #feedback button:hover,
+        #reservation button:hover,
+        #history button:hover,
+        #lab-resources button:hover,
+        #rules button:hover,
+        #lab-rules button:hover {
+            background-color: #e58aa3 !important;
+        }
+        
+        /* Enhanced admin buttons */
+        .students-controls .add-btn, 
+        .students-controls .reset-btn,
+        .filter-btn,
+        .add-resource-box .add-btn {
+            background-color: #E0B0FF !important;
+            color: black !important;
+            font-weight: bold !important;
+            padding: 10px 20px !important;
+            border: 2px solid #C690FF !important;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+            border-radius: 6px !important;
+            transition: all 0.3s ease !important;
+            font-size: 14px !important;
+        }
+        
+        .students-controls .add-btn:hover, 
+        .students-controls .reset-btn:hover,
+        .filter-btn:hover,
+        .add-resource-box .add-btn:hover {
+            background-color: #C690FF !important;
+            color: white !important;
+            transform: translateY(-2px) !important;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15) !important;
+        }
+        
+        /* Fix all student theme colors to pink (#F7B4C6) */
+        .section-placeholder .star-rating label,
+        .section-placeholder .history-table th,
+        .section-placeholder h2,
+        .section-placeholder .back-btn:hover,
+        .section-placeholder a:hover {
+            color: #F7B4C6 !important;
+        }
+        
+        .section-placeholder .back-btn,
+        .section-placeholder tr:hover,
+        .section-placeholder th {
+            border-color: #F7B4C6 !important;
+        }
+        
+        /* Make filter boxes more visible */
+        .filter-controls {
+            background-color: #f5f5f5 !important;
+            padding: 20px !important;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
+            margin-bottom: 20px !important;
+            border: 2px solid #E0B0FF !important;
+        }
+        
+        .filter-btn {
+            background-color: #E0B0FF !important;
+            color: black !important;
+            font-weight: bold !important;
+            padding: 10px 25px !important;
+            border: 2px solid #C690FF !important;
+            min-width: 150px !important;
+        }
+        
+        .reset-filter-btn {
+            background-color: white !important;
+            color: #ff4444 !important;
+            font-weight: bold !important;
+            border: 2px solid #ff4444 !important;
+            padding: 10px 25px !important;
+            min-width: 150px !important;
+        }
+        
+        .reset-filter-btn:hover {
+            background-color: #ff4444 !important;
+            color: white !important;
+        }
+
+        /* Add this rule specifically for student sidebar */
+        body.student-page .sidebar {
+            background-color: #F7B4C6 !important;
+        }
+        
+        /* Admin section buttons and fonts to purple */
+        .add-resource-box .add-btn,
+        .filter-btn, 
+        .students-controls .add-btn,
+        .students-controls .reset-btn,
+        .read-btn,
+        .export-btn,
+        #lab-resources .add-btn,
+        #lab-resources button,
+        .sit-in-btn,
+        .end-session-btn,
+        .approve-btn,
+        .add-btn {
+            background-color: #E0B0FF !important;
+            color: black !important;
+        }
+        
+        /* Admin section titles, headings, and links in purple */
+        .admin-dashboard h2,
+        .admin-dashboard h3,
+        .admin-section h2,
+        .admin-section h3,
+        .section-header h2 {
+            color: #E0B0FF !important;
+        }
+        
+        /* Fix back to dashboard buttons */
+        .back-btn {
+            display: inline-block !important;
+            padding: 8px 15px !important;
+            background-color: transparent !important;
+            color: #E0B0FF !important;
+            border: 2px solid #E0B0FF !important;
+            border-radius: 5px !important;
+            text-decoration: none !important;
+            transition: all 0.3s ease !important;
+            margin-bottom: 20px !important;
+            font-weight: 600 !important;
+        }
+        
+        .back-btn:hover {
+            background-color: #E0B0FF !important;
+            color: white !important;
+        }
+
+        .section-title {
+            color: white !important;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+
+        /* Student Announcements Section */
+        .student-announcements {
+            flex: 1;
+            min-width: 300px;
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            height: auto; /* Changed from fixed height to auto */
+            max-height: 600px; /* Added max-height instead */
+            overflow-y: auto; /* Keep scrollable */
+        }
+
+        .student-announcements h3 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #F7B4C6;
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 10;
+        }
+
+        .student-announcements .announcement-item {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .student-announcements .announcement-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+        }
+
+        .student-announcements .announcement-item h4 {
+            color: #333;
+            font-size: 18px;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .student-announcements .announcement-item p {
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 12px;
+            font-size: 15px;
+            flex-grow: 1;
+        }
+
+        .student-announcements .announcement-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #888;
+            font-size: 14px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+            margin-top: auto;
+        }
+
+        .student-announcements .announcement-meta span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .student-announcements .announcement-meta span::before {
+            content: "📅";
+        }
+
+        .announcements-list {
+            max-height: 400px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        /* Admin section styles */
+        .admin-section {
+            margin-top: 20px;
+        }
+
+        .admin-settings {
+            display: flex;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .section-header h2 {
+            color: white !important;
+            margin-bottom: 15px;
+            font-size: 22px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #E0B0FF;
+        }
+
+        .section-header h3 {
+            color: white !important;
+            margin: 0;
+            font-size: 24px;
+        }
+
+        #leaderboard h2,
+        #leaderboard h3 {
+            color: white !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-content">
+            <img src="logo ccs.png" class="logo" alt="Logo">
+            <h1>CCS SIT-IN MONITORING SYSTEM</h1>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h3><?php echo isset($_SESSION['is_admin']) && $_SESSION['is_admin'] ? 'Admin' : 'Student'; ?></h3>
+            <h3>Dashboard</h3>
+            <span id="toggle-btn" onclick="toggleSidebar()">&#9776;</span>
+        </div>
+        <ul>
+            <?php if (isset($_SESSION['is_admin']) && $_SESSION['is_admin']) { ?>
+            <li><a href="#home"><i class="fa fa-dashboard"></i> Dashboard</a></li>
+            <li><a href="#students"><i class="fa fa-users"></i> Students</a></li>
+            <li><a href="#view-sit-in-records"><i class="fa fa-list"></i> Today's Sit-In Records</a></li>
+            <li><a href="#current-sit-in"><i class="fa fa-desktop"></i> Current Sit-In Sessions</a></li>
+            <li><a href="#reservation-approval"><i class="fa fa-calendar"></i> Reservations</a></li>
+            <li><a href="#sit-in-reports"><i class="fa fa-file-text"></i> Sit-In Reports</a></li>
+            <li><a href="#feedback-reports"><i class="fa fa-comments"></i> Feedback Reports</a></li>
+            <li><a href="#leaderboard"><i class="fa fa-trophy"></i> Leaderboard</a></li>
+            <li><a href="#lab-resources"><i class="fa fa-folder"></i> Lab Resources</a></li>
+            <li><a href="#computer-control"><i class="fa fa-desktop"></i> Computer Control</a></li>
+            <li><a href="#lab-schedules"><i class="fa fa-clock-o"></i> Lab Schedules</a></li>
+            <li><a href="#feedback" onclick="openFeedbackForm()"><i class="fa fa-comment"></i> Submit Feedback</a></li>
+            <?php } else { ?>
+            <li><a href="#" onclick="showStudentProfile(); return false;"><i class="fa fa-user"></i> Profile</a></li>
+            <li><a href="#" onclick="showStudentSitInRules(); return false;"><i class="fa fa-info-circle"></i> Sit-In Rules</a></li>
+            <li><a href="#" onclick="showStudentLabRules(); return false;"><i class="fa fa-book"></i> Lab Rules & Regulations</a></li>
+            <li><a href="#" onclick="showStudentHistory(); return false;"><i class="fa fa-history"></i> Sit-In History</a></li>
+            <li><a href="#" onclick="showStudentReservation(); return false;"><i class="fa fa-calendar"></i> Reservation</a></li>
+            <li><a href="#" onclick="showStudentLabResources(); return false;"><i class="fa fa-folder"></i> Lab Resources</a></li>
+            <li><a href="#" onclick="showStudentLabSchedules(); return false;"><i class="fa fa-clock-o"></i> Lab Schedules</a></li>
+            <?php } ?>
+        </ul>
+        <div class="sidebar-footer">
+        <button class="logout-btn" onclick="window.location.href='logout.php'">Logout</button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="content" id="content">
+        <?php if (isset($_SESSION['is_admin']) && $_SESSION['is_admin']) { ?>
+            <!-- Admin Dashboard -->
+            <div class="admin-dashboard">
+                <!-- Home Section -->
+                <div id="home" class="home-section">
+                    <!-- Statistics Section -->
+                    <div class="stats-section">
+                        <div class="stats-box">
+                            <h3>Statistics</h3>
+                            <div class="stats-grid">
+                                <div class="stat-item">
+                                    <div class="stat-value"><?php
+                                        $query = "SELECT COUNT(*) as total FROM users WHERE status = 'active' AND idno != '00'";
+                                        $result = mysqli_query($conn, $query);
+                                        $row = mysqli_fetch_assoc($result);
+                                        echo $row['total'];
+                                    ?></div>
+                                    <div class="stat-label">Total Students</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value"><?php
+                                        $query = "SELECT COUNT(*) as total FROM sit_in_records WHERE status = 'active'";
+                                        $result = mysqli_query($conn, $query);
+                                        $row = mysqli_fetch_assoc($result);
+                                        echo $row['total'];
+                                    ?></div>
+                                    <div class="stat-label">Currently Sitting In</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value"><?php
+                                        $query = "SELECT COUNT(*) as total FROM sit_in_records WHERE status = 'completed'";
+                                        $result = mysqli_query($conn, $query);
+                                        $row = mysqli_fetch_assoc($result);
+                                        echo $row['total'];
+                                    ?></div>
+                                    <div class="stat-label">Total Sit-ins</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chart-box">
+                            <h3>Programming Languages Usage</h3>
+                            <canvas id="languageChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Announcements Section -->
+                    <div class="announcements-section">
+                        <div class="announcements-header">
+                            <h3>Announcements</h3>
+                            <button onclick="openAnnouncementModal()" class="new-announcement-btn">New Announcement</button>
+                        </div>
+                        <div class="announcements-list">
+                            <?php
+                            $query = "SELECT * FROM announcements WHERE status = 'active' ORDER BY date_posted DESC";
+                            $result = mysqli_query($conn, $query);
+                            while ($announcement = mysqli_fetch_assoc($result)) {
+                                echo '<div class="announcement-item">';
+                                echo '<h4>' . htmlspecialchars($announcement['title']) . '</h4>';
+                                echo '<p>' . htmlspecialchars($announcement['content']) . '</p>';
+                                echo '<div class="announcement-meta">';
+                                echo '<span>Posted on: ' . date('M d, Y h:i A', strtotime($announcement['date_posted'])) . '</span>';
+                                echo '<button onclick="deleteAnnouncement(' . $announcement['id'] . ')" class="delete-announcement-btn">Delete</button>';
+                                echo '</div>';
+                                echo '</div>';
+                            }
+                            ?>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Students Section -->
+                <div id="students" class="students-section" style="display: none;">
+                    <h2 class="section-title" style="color: white;">Students Information</h2>
+                    
+                    <div class="students-controls">
+                        <div class="left-controls">
+                            <button onclick="openAddStudentModal()" class="action-btn add-btn" style="background-color: #8A2BE2; color: white; border: 2px solid white; padding: 8px 15px; border-radius: 4px; font-weight: 500;">Add Student</button>
+                            <button onclick="resetAllSessions()" class="action-btn reset-btn" style="background-color: #8A2BE2; color: white; border: 2px solid white; padding: 8px 15px; border-radius: 4px; font-weight: 500;">Reset All Sessions</button>
+                        </div>
+                        <div class="right-controls">
+                            <input type="text" id="studentSearch" onkeyup="searchStudents()" placeholder="Search students..." class="search-input">
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <table id="studentsTable">
+                            <thead>
+                                <tr>
+                                    <th>ID Number</th>
+                                    <th>Name</th>
+                                    <th>Email</th>
+                                    <th>Year Level</th>
+                                    <th>Course</th>
+                                    <th>Remaining Sessions</th>
+                                    <th>Behavior Points</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                // Pagination settings
+                                $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10; // Default limit
+                                $page = isset($_GET['page']) ? (int)$_GET['page'] : 1; // Default page
+                                $offset = ($page - 1) * $limit;
+                                
+                                // Fetch total number of students
+                                $total_query = "SELECT COUNT(*) as total FROM users WHERE idno != '00'";
+                                $total_result = mysqli_query($conn, $total_query);
+                                $total_row = mysqli_fetch_assoc($total_result);
+                                $total_students = $total_row['total'];
+                                
+                                // Fetch students with limit and offset
+                                $query = "SELECT * FROM users WHERE idno != '00' ORDER BY lastname ASC LIMIT $limit OFFSET $offset";
+                                $result = mysqli_query($conn, $query);
+                                
+                                // Calculate total pages
+                                $total_pages = ceil($total_students / $limit);
+
+                                while ($student = mysqli_fetch_assoc($result)) {
+                                    $course_name = isset($courses[$student['course']]) ? $courses[$student['course']] : 'Unknown';
+                                    $remaining_sessions = isset($student['remaining_sessions']) ? $student['remaining_sessions'] : 10;
+                                    $behavior_points = isset($student['behavior_points']) ? $student['behavior_points'] : 0;
+                                    
+                                    echo '<tr>';
+                                    echo '<td>' . htmlspecialchars($student['idno']) . '</td>';
+                                    echo '<td>' . htmlspecialchars($student['lastname'] . ', ' . $student['firstname'] . ' ' . $student['midname']) . '</td>';
+                                    echo '<td>' . htmlspecialchars($student['email']) . '</td>';
+                                    echo '<td>' . htmlspecialchars($student['yearlvl']) . '</td>';
+                                    echo '<td>' . htmlspecialchars($course_name) . '</td>';
+                                    echo '<td>' . htmlspecialchars($remaining_sessions) . '</td>';
+                                    echo '<td>' . htmlspecialchars($behavior_points) . '</td>';
+                                    echo '<td class="actions">';
+                                    echo '<button onclick="editStudent(\'' . $student['idno'] . '\')" class="edit-btn">Edit</button> ';
+                                    echo '<button onclick="deleteStudent(\'' . $student['idno'] . '\')" class="delete-btn">Delete</button> ';
+                                    echo '<button onclick="activateSitIn(\'' . $student['idno'] . '\', \'' . $student['firstname'] . ' ' . $student['lastname'] . '\', ' . $remaining_sessions . ')" class="sit-in-btn" style="background-color: #E0B0FF; color: black; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;">Sit In</button>';
+                                    echo '</td>';
+                                    echo '</tr>';
+                                }
+                                ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px;">
+                        <div style="display: flex; align-items: center;">
+                            <select id="limit" onchange="changeLimit()" style="padding: 5px; font-size: 12px; border-radius: 4px; border: 1px solid #ddd;">
+                                <option value="5" <?php echo $limit == 5 ? 'selected' : ''; ?>>5</option>
+                                <option value="10" <?php echo $limit == 10 ? 'selected' : ''; ?>>10</option>
+                                <option value="20" <?php echo $limit == 20 ? 'selected' : ''; ?>>20</option>
+                            </select>
+                            <span style="margin-left: 5px; font-size: 12px;">entries per page</span>
+                        </div>
+                        <div class="pagination" style="display: flex; gap: 5px;">
+                            <?php for ($i = 1; $i <= $total_pages; $i++): ?>
+                                <a href="?page=<?php echo $i; ?>&limit=<?php echo $limit; ?>" class="<?php echo $i == $page ? 'active' : ''; ?>" style="padding: 5px 10px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: <?php echo $i == $page ? 'white' : '#333'; ?>; background-color: <?php echo $i == $page ? '#8A2BE2' : 'white'; ?>;">
+                                    <?php echo $i; ?>
+                                </a>
+                            <?php endfor; ?>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sit-in Records Section -->
+                <div id="view-sit-in-records" class="admin-section" style="display: none;">
+                    <div class="section-header">
+                        <h2>Today's Sit-In Records</h2>
+                        <a href="#home" class="back-btn">Back to Dashboard</a>
+                    </div>
+                    
+                    <?php
+                    // Get count of today's sit-in records
+                    $today = date('Y-m-d');
+                    $count_query = "SELECT COUNT(*) as count FROM sit_in_sessions WHERE DATE(session_start) = '$today'";
+                    $count_result = mysqli_query($conn, $count_query);
+                    $today_count = mysqli_fetch_assoc($count_result)['count'];
+                    ?>
+                    
+                    <div class="today-count" style="background-color: #E0B0FF; color: black; padding: 10px 20px; border-radius: 8px; margin-bottom: 20px; display: inline-block;">
+                        <strong>Today's Records:</strong> <?php echo $today_count; ?> sit-in sessions
+                    </div>
+                    
+                    <!-- Charts for Programming Languages and Labs -->
+                    <div class="charts-container" style="display: flex; gap: 20px; margin-bottom: 30px;">
+                        <div class="chart-box" style="flex: 1; background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); height: 350px;">
+                            <h3 style="text-align: center; margin-bottom: 15px;">Programming Languages Used Today</h3>
+                            <canvas id="languageUsageChart"></canvas>
+                        </div>
+                        <div class="chart-box" style="flex: 1; background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); height: 350px;">
+                            <h3 style="text-align: center; margin-bottom: 15px;">Labs Used Today</h3>
+                            <canvas id="labUsageChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table class="data-table" id="sit-in-table">
+                            <thead>
+                                <tr>
+                                    <th>Student ID</th>
+                                    <th>Student Name</th>
+                                    <th>Purpose (Language Used)</th>
+                                    <th>Laboratory</th>
+                                    <th>Session Start</th>
+                                    <th>Session End</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                // Fetch sit-in records for today
+                                $today = date('Y-m-d');
+                                $records_query = "SELECT s.*, u.firstname, u.lastname, u.midname 
+                                                 FROM sit_in_sessions s
+                                                 JOIN users u ON s.student_id = u.idno
+                                                 WHERE DATE(s.session_start) = '$today'
+                                                 ORDER BY s.session_start DESC";
+                                $records_result = mysqli_query($conn, $records_query);
+                                
+                                if (mysqli_num_rows($records_result) > 0) {
+                                    while ($record = mysqli_fetch_assoc($records_result)) {
+                                        echo "<tr>";
+                                        echo "<td>" . htmlspecialchars($record['student_id']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['lastname'] . ", " . $record['firstname'] . " " . $record['midname']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['purpose']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['laboratory']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['session_start']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['session_end'] ? $record['session_end'] : 'In Progress') . "</td>";
+                                        echo "</tr>";
+                                    }
+                                } else {
+                                    echo "<tr><td colspan='6' style='text-align: center;'>No sit-in records found for today</td></tr>";
+                                }
+                                ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Current Sit-in Sessions Section -->
+                <div id="current-sit-in" class="admin-section" style="display: none;">
+                    <div class="section-header">
+                        <h2>Current Sit-in Sessions</h2>
+                        <a href="#home" class="back-btn">Back to Dashboard</a>
+                    </div>
+                    
+                    <?php
+                    // Get total active sessions
+                    $active_query = "SELECT COUNT(*) as count FROM sit_in_sessions WHERE status = 'active'";
+                    $active_result = mysqli_query($conn, $active_query);
+                    $active_count = mysqli_fetch_assoc($active_result)['count'];
+                    ?>
+                    
+                    <div class="info-note">
+                        <p><strong>Total Active Sessions:</strong> <?php echo $active_count; ?></p>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Student ID</th>
+                                    <th>Name</th>
+                                    <th>Course</th>
+                                    <th>Room</th>
+                                    <th>Purpose</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                // Fetch active sit-in sessions
+                                $active_sessions_query = "SELECT s.*, u.firstname, u.lastname, u.midname, u.course 
+                                                        FROM sit_in_sessions s
+                                                        JOIN users u ON s.student_id = u.idno
+                                                        WHERE s.status = 'active'
+                                                        ORDER BY s.session_start DESC";
+                                $active_sessions_result = mysqli_query($conn, $active_sessions_query);
+                                
+                                if (mysqli_num_rows($active_sessions_result) > 0) {
+                                    while ($session = mysqli_fetch_assoc($active_sessions_result)) {
+                                        // Map course ID to name
+                                        $course_name = "";
+                                        if (isset($courses[$session['course']])) {
+                                            $course_name = $courses[$session['course']];
+                                        }
+                                        
+                                        echo "<tr>";
+                                        echo "<td>" . htmlspecialchars($session['student_id']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($session['lastname'] . ", " . $session['firstname'] . " " . $session['midname']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($course_name) . "</td>";
+                                        echo "<td>" . htmlspecialchars($session['laboratory']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($session['purpose']) . "</td>";
+                                        echo "<td class='actions'>";
+                                        echo "<button onclick=\"endSitInSession('" . $session['id'] . "')\" class='end-session-btn' style='background-color: #E0B0FF; color: black; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;'>End Session + Reward</button>";
+                                        echo "</td>";
+                                        echo "</tr>";
+                                    }
+                                } else {
+                                    echo "<tr><td colspan='6' style='text-align: center;'>No active sit-in sessions</td></tr>";
+                                }
+                                ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Reservation Approval Section -->
+                <div id="reservation-approval" class="admin-section" style="display: none;">
+                    <div class="section-header">
+                        <h2 class="section-title">Reservation Approvals</h2>
+                        <a href="#home" class="back-btn">Back to Dashboard</a>
+                    </div>
+                    
+                    <?php
+                    // Get total pending reservations
+                    $pending_query = "SELECT COUNT(*) as count FROM reservations WHERE status = 'pending'";
+                    $pending_result = mysqli_query($conn, $pending_query);
+                    $pending_count = mysqli_fetch_assoc($pending_result)['count'];
+                    ?>
+                    
+                    <div class="info-note">
+                        <p><strong>Total Pending Reservations:</strong> <?php echo $pending_count; ?></p>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Student Name</th>
+                                    <th>Date</th>
+                                    <th>Time Slot</th>
+                                    <th>Room</th>
+                                    <th>Purpose</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                $query = "SELECT r.*, u.firstname, u.lastname 
+                                        FROM reservations r 
+                                        JOIN users u ON r.student_id = u.idno 
+                                        WHERE r.status = 'pending' 
+                                        ORDER BY r.date, r.time_slot";
+                                $result = mysqli_query($conn, $query);
+                                
+                                if (mysqli_num_rows($result) > 0) {
+                                    while ($reservation = mysqli_fetch_assoc($result)) {
+                                        echo '<tr>';
+                                        echo '<td>' . htmlspecialchars($reservation['firstname'] . ' ' . $reservation['lastname']) . '</td>';
+                                        echo '<td>' . htmlspecialchars($reservation['date']) . '</td>';
+                                        echo '<td>' . htmlspecialchars($reservation['time_slot']) . '</td>';
+                                        echo '<td>' . htmlspecialchars($reservation['room']) . '</td>';
+                                        echo '<td>' . htmlspecialchars($reservation['purpose']) . '</td>';
+                                        echo '<td>' . htmlspecialchars($reservation['status']) . '</td>';
+                                        echo '<td class="actions" style="display: flex; gap: 10px;">';
+                                        echo '<button onclick="approveReservation(' . $reservation['id'] . ')" class="approve-btn" style="background-color: #E0B0FF; color: black; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;">Approve</button>';
+                                        echo '<button onclick="rejectReservation(' . $reservation['id'] . ')" class="reject-btn" style="background-color: #ff4444; color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;">Reject</button>';
+                                        echo '</td>';
+                                        echo '</tr>';
+                                    }
+                                } else {
+                                    echo '<tr><td colspan="7" style="text-align: center;">No pending reservations</td></tr>';
+                                }
+                                ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div style="margin-top: 30px;">
+                        <h3 style="color: #333; margin-bottom: 15px;">Reservation History</h3>
+                        <div class="convert-file-box" style="margin-bottom: 15px;">
+                            <div class="export-dropdown">
+                                <button class="export-btn" style="background-color: #E0B0FF; color: black;">Convert File</button>
+                                <div class="export-dropdown-content">
+                                    <a href="javascript:void(0)" onclick="exportTableToExcel('reservation-history-table')">Microsoft Excel</a>
+                                    <a href="javascript:void(0)" onclick="exportTableToCSV('reservation-history-table')">Google Sheets (CSV)</a>
+                                    <a href="javascript:void(0)" onclick="exportTableToCSV('reservation-history-table')">Apple Numbers</a>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="table-container">
+                            <table id="reservation-history-table">
+                                <thead>
+                                    <tr>
+                                        <th>Student ID</th>
+                                        <th>Name</th>
+                                        <th>Purpose</th>
+                                        <th>Room</th>
+                                        <th>Computer</th>
+                                        <th>Date</th>
+                                        <th>Time Slot</th>
+                                        <th>Status</th>
+                                        <th>Requested</th>
+                                        <th>Response Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php
+                                    $history_query = "SELECT r.*, u.firstname, u.lastname, u.midname 
+                                                    FROM reservations r 
+                                                    JOIN users u ON r.student_id = u.idno 
+                                                    WHERE r.status IN ('approved', 'rejected') 
+                                                    ORDER BY r.date DESC 
+                                                    LIMIT 50";
+                                    $history_result = mysqli_query($conn, $history_query);
+                                    
+                                    if (mysqli_num_rows($history_result) > 0) {
+                                        while ($reservation = mysqli_fetch_assoc($history_result)) {
+                                            // Calculate response time (timestamp difference)
+                                            $request_time = strtotime($reservation['created_at']);
+                                            $response_time = strtotime($reservation['updated_at'] ?? $reservation['created_at']);
+                                            $response_diff = $response_time - $request_time;
+                                            
+                                            // Format the response time
+                                            if ($response_diff < 3600) {
+                                                $formatted_diff = round($response_diff / 60) . " minutes";
+                                            } else if ($response_diff < 86400) {
+                                                $formatted_diff = round($response_diff / 3600, 1) . " hours";
+                                            } else {
+                                                $formatted_diff = round($response_diff / 86400, 1) . " days";
+                                            }
+                                            
+                                            echo '<tr>';
+                                            echo '<td>' . htmlspecialchars($reservation['student_id']) . '</td>';
+                                            echo '<td>' . htmlspecialchars($reservation['lastname'] . ", " . $reservation['firstname'] . " " . $reservation['midname']) . '</td>';
+                                            echo '<td>' . htmlspecialchars($reservation['purpose']) . '</td>';
+                                            echo '<td>' . htmlspecialchars($reservation['room']) . '</td>';
+                                            echo '<td>' . htmlspecialchars($reservation['computer'] ?? 'N/A') . '</td>';
+                                            echo '<td>' . htmlspecialchars($reservation['date']) . '</td>';
+                                            echo '<td>' . htmlspecialchars($reservation['time_slot']) . '</td>';
+                                            echo '<td style="color: ' . ($reservation['status'] == 'approved' ? 'green' : 'red') . ';">' . htmlspecialchars(ucfirst($reservation['status'])) . '</td>';
+                                            echo '<td>' . htmlspecialchars(date('M d, Y h:i A', strtotime($reservation['created_at']))) . '</td>';
+                                            echo '<td>' . htmlspecialchars($formatted_diff) . '</td>';
+                                            echo '</tr>';
+                                        }
+                                    } else {
+                                        echo '<tr><td colspan="10" style="text-align: center;">No reservation history available</td></tr>';
+                                    }
+                                    ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Lab Resources Section -->
+                <div id="lab-resources" class="admin-section" style="display: none;">
+                    <div class="section-header" style="text-align: center;">
+                        <h2>Lab Resources & Materials</h2>
+                        <div class="add-resource-box">
+                            <button class="add-btn" onclick="openResourceModal()" style="background-color: #E0B0FF; color: black;">Add New Resource</button>
+                        </div>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Title</th>
+                                    <th>File/Link</th>
+                                    <th>Description</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                // Fetch all resources
+                                $resources_query = "SELECT * FROM lab_resources ORDER BY created_at DESC";
+                                $resources_result = mysqli_query($conn, $resources_query);
+                                
+                                while ($resource = mysqli_fetch_assoc($resources_result)) {
+                                    $status_class = $resource['status'] == 'active' ? 'status-active' : 'status-inactive';
+                                    $toggle_text = $resource['status'] == 'active' ? 'Deactivate' : 'Activate';
+                                    $toggle_action = $resource['status'] == 'active' ? 'deactivate' : 'activate';
+                                    
+                                    // Check if it's a file or a link
+                                    $is_file = strpos($resource['link'], 'uploads/') === 0;
+                                    $resource_type = $is_file ? 'File' : 'Link';
+                                    $display_link = $is_file ? basename($resource['link']) : $resource['link'];
+                                    
+                                    echo "<tr>
+                                        <td>{$resource['title']}</td>
+                                        <td><a href='{$resource['link']}' target='_blank'>{$display_link}</a> ({$resource_type})</td>
+                                        <td>{$resource['description']}</td>
+                                        <td><span class='{$status_class}'>{$resource['status']}</span></td>
+                                        <td class='actions'>
+                                            <button onclick='{$toggle_action}Resource({$resource['id']})' class='action-btn'>{$toggle_text}</button>
+                                            <button onclick='deleteResource({$resource['id']})' class='delete-btn'>Delete</button>
+                                        </td>
+                                    </tr>";
+                                }
+                                ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Sit-in Reports Section -->
+                <div id="sit-in-reports" class="admin-section" style="display: none;">
+                    <div class="section-header">
+                        <h2>Generate Reports</h2>
+                        <a href="#home" class="back-btn">Back to Dashboard</a>
+                        <div class="convert-file-box">
+                            <div class="export-controls">
+                                <div class="export-dropdown">
+                                    <button class="export-btn" style="background-color: #E0B0FF; color: black;">Convert File</button>
+                                    <div class="export-dropdown-content">
+                                        <a href="javascript:void(0)" onclick="exportTableToExcel('reports-table')">Microsoft Excel</a>
+                                        <a href="javascript:void(0)" onclick="exportTableToCSV('reports-table')">Google Sheets (CSV)</a>
+                                        <a href="javascript:void(0)" onclick="exportTableToCSV('reports-table')">Apple Numbers</a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="filter-controls">
+                        <form id="reportsFilterForm" method="GET" action="javascript:void(0)" onsubmit="filterReports()">
+                            <div class="filter-row">
+                                <div class="filter-group">
+                                    <label for="fromDate">From Date:</label>
+                                    <input type="date" id="fromDate" name="fromDate">
+                                </div>
+                                <div class="filter-group">
+                                    <label for="toDate">To Date:</label>
+                                    <input type="date" id="toDate" name="toDate">
+                                </div>
+                                <div class="filter-group">
+                                    <label for="purposeFilter">Purpose:</label>
+                                    <select id="purposeFilter" name="purpose">
+                                        <option value="">All</option>
+                                        <option value="C#">C#</option>
+                                        <option value="C">C</option>
+                                        <option value="Java">Java</option>
+                                        <option value="ASP.Net">ASP.Net</option>
+                                        <option value="PHP">PHP</option>
+                                        <option value="Other">Other</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label for="reportsSearch">Search:</label>
+                                    <input type="text" id="reportsSearch" name="search" placeholder="Search by name or ID">
+                                </div>
+                                <div class="filter-actions">
+                                    <button type="submit" class="filter-btn" style="background-color: #E0B0FF; color: black; padding: 8px 16px; border: 2px solid #C690FF; border-radius: 4px; cursor: pointer; margin-right: 10px; min-width: 120px; font-weight: 500; box-shadow: 0 2px 4px rgba(198, 144, 255, 0.3);">Apply Filters</button>
+                                    <button type="button" class="reset-filter-btn" onclick="resetReportsFilter()" style="background-color: #ff4444; color: white; padding: 8px 16px; border: 2px solid #cc0000; border-radius: 4px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; min-width: 120px; box-shadow: 0 2px 4px rgba(255, 68, 68, 0.3);">Reset</button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table class="data-table" id="reports-table">
+                            <thead>
+                                <tr>
+                                    <th>Sit-in ID</th>
+                                    <th>Student ID</th>
+                                    <th>Name</th>
+                                    <th>Course</th>
+                                    <th>Purpose (Language)</th>
+                                    <th>Room</th>
+                                    <th>Login Time</th>
+                                    <th>Logout Time</th>
+                                    <th>Duration (min)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="reportsTableBody">
+                                <?php
+                                // Initial fetch of sit-in records - limit to last 30 days by default
+                                $default_from_date = date('Y-m-d', strtotime('-30 days'));
+                                $default_to_date = date('Y-m-d');
+                                
+                                $reports_query = "SELECT s.*, u.firstname, u.lastname, u.midname, u.course 
+                                                FROM sit_in_sessions s
+                                                JOIN users u ON s.student_id = u.idno
+                                                WHERE DATE(s.session_start) BETWEEN '$default_from_date' AND '$default_to_date'
+                                                ORDER BY s.session_start DESC
+                                                LIMIT 100";
+                                $reports_result = mysqli_query($conn, $reports_query);
+                                
+                                if (mysqli_num_rows($reports_result) > 0) {
+                                    while ($record = mysqli_fetch_assoc($reports_result)) {
+                                        // Map course ID to name
+                                        $course_name = "";
+                                        if (isset($courses[$record['course']])) {
+                                            $course_name = $courses[$record['course']];
+                                        }
+                                        
+                                        // Format duration
+                                        $duration = $record['duration'] ? $record['duration'] : '';
+                                        if (!$duration && $record['session_end']) {
+                                            $start = new DateTime($record['session_start']);
+                                            $end = new DateTime($record['session_end']);
+                                            $interval = $start->diff($end);
+                                            $duration = ($interval->h * 60) + $interval->i;
+                                        }
+                                        
+                                        echo "<tr>";
+                                        echo "<td>" . htmlspecialchars($record['id']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['student_id']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['lastname'] . ", " . $record['firstname'] . " " . $record['midname']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($course_name) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['purpose']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['laboratory']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['session_start']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($record['session_end'] ? $record['session_end'] : 'In Progress') . "</td>";
+                                        echo "<td>" . htmlspecialchars($duration) . "</td>";
+                                        echo "</tr>";
+                                    }
+                                } else {
+                                    echo "<tr><td colspan='9' style='text-align: center;'>No sit-in records found</td></tr>";
+                                }
+                                ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div class="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px;">
+                        <div style="display: flex; align-items: center;">
+                            <select id="reportsLimit" onchange="changeReportsLimit()" style="padding: 5px; font-size: 12px; border-radius: 4px; border: 1px solid #ddd;">
+                                <option value="10">10</option>
+                                <option value="25">25</option>
+                                <option value="50" selected>50</option>
+                                <option value="100">100</option>
+                            </select>
+                            <span>Show entries per page</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Feedback Reports Section -->
+                <div id="feedback-reports" class="admin-section" style="display: none;">
+                    <div class="section-header">
+                        <h2>Feedback Reports</h2>
+                        <a href="#home" class="back-btn">Back to Dashboard</a>
+                    </div>
+                    
+                    <?php
+                    // Get total reports
+                    $feedback_query = "SHOW TABLES LIKE 'student_feedback'";
+                    $feedback_result = mysqli_query($conn, $feedback_query);
+                    
+                    if (mysqli_num_rows($feedback_result) > 0) {
+                        $count_query = "SELECT COUNT(*) as count FROM student_feedback";
+                        $count_result = mysqli_query($conn, $count_query);
+                        $feedback_count = mysqli_fetch_assoc($count_result)['count'];
+                    } else {
+                        $feedback_count = 0;
+                    }
+                    ?>
+                    
+                    <div class="info-note">
+                        <p><strong>Total Feedbacks:</strong> <?php echo $feedback_count; ?></p>
+                    </div>
+                    
+                    <div class="filter-controls">
+                        <form id="feedbackFilterForm" method="GET" action="javascript:void(0)" onsubmit="filterFeedback()">
+                            <div class="filter-row">
+                                <div class="filter-group">
+                                    <label for="feedbackSearch">Student Name/ID:</label>
+                                    <input type="text" id="feedbackSearch" name="search" placeholder="Search by name or ID">
+                                </div>
+                                <div class="filter-group">
+                                    <label for="ratingFilter">Rating:</label>
+                                    <select id="ratingFilter" name="rating">
+                                        <option value="">All</option>
+                                        <option value="5">5 Stars</option>
+                                        <option value="4">4 Stars</option>
+                                        <option value="3">3 Stars</option>
+                                        <option value="2">2 Stars</option>
+                                        <option value="1">1 Star</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label for="roomFilter">Room:</label>
+                                    <select id="roomFilter" name="room">
+                                        <option value="">All</option>
+                                        <option value="524">Room 524</option>
+                                        <option value="526">Room 526</option>
+                                        <option value="528">Room 528</option>
+                                        <option value="530">Room 530</option>
+                                        <option value="547">Room 547</option>
+                                        <option value="MAC">MAC Lab</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label for="statusFilter">Status:</label>
+                                    <select id="statusFilter" name="status">
+                                        <option value="">All</option>
+                                        <option value="read">Read</option>
+                                        <option value="unread">Unread</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="filter-row">
+                                <div class="filter-group">
+                                    <label for="feedbackFromDate">From Date:</label>
+                                    <input type="date" id="feedbackFromDate" name="fromDate">
+                                </div>
+                                <div class="filter-group">
+                                    <label for="feedbackToDate">To Date:</label>
+                                    <input type="date" id="feedbackToDate" name="toDate">
+                                </div>
+                                <div class="filter-actions">
+                                    <button type="submit" class="filter-btn" style="background-color: #E0B0FF; color: black; padding: 8px 16px; border: 2px solid #C690FF; border-radius: 4px; cursor: pointer; margin-right: 10px; min-width: 120px; font-weight: 500; box-shadow: 0 2px 4px rgba(198, 144, 255, 0.3);">Apply Filters</button>
+                                    <button type="button" class="reset-filter-btn" onclick="resetFeedbackFilter()" style="background-color: #ff4444; color: white; padding: 8px 16px; border: 2px solid #cc0000; border-radius: 4px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; min-width: 120px; box-shadow: 0 2px 4px rgba(255, 68, 68, 0.3);">Reset</button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    
+                    <div class="feedback-container">
+                        <?php
+                        // Check if student_feedback table exists
+                        $table_exists_query = "SHOW TABLES LIKE 'student_feedback'";
+                        $table_exists_result = mysqli_query($conn, $table_exists_query);
+                        
+                        if (mysqli_num_rows($table_exists_result) > 0) {
+                            // Fetch feedback
+                            $feedback_list_query = "SELECT f.*, u.firstname, u.lastname, u.midname 
+                                                  FROM student_feedback f
+                                                  JOIN users u ON f.student_id = u.idno
+                                                  ORDER BY f.date_submitted DESC
+                                                  LIMIT 20";
+                            $feedback_list_result = mysqli_query($conn, $feedback_list_query);
+                            
+                            if (mysqli_num_rows($feedback_list_result) > 0) {
+                                while ($feedback = mysqli_fetch_assoc($feedback_list_result)) {
+                                    $status_class = $feedback['status'] == 'unread' ? 'unread' : '';
+                                    
+                                    echo '<div class="feedback-item ' . $status_class . '">';
+                                    echo '<div class="feedback-header">';
+                                    echo '<div class="student-info">';
+                                    echo '<h3>' . htmlspecialchars($feedback['lastname'] . ', ' . $feedback['firstname'] . ' ' . $feedback['midname']) . ' (' . htmlspecialchars($feedback['student_id']) . ')</h3>';
+                                    echo '<span class="room-label">Room: ' . htmlspecialchars($feedback['room']) . '</span>';
+                                    echo '</div>';
+                                    echo '<div class="feedback-meta">';
+                                    echo '<div class="rating">';
+                                    
+                                    // Display stars
+                                    for ($i = 1; $i <= 5; $i++) {
+                                        $star_class = $i <= $feedback['rating'] ? 'filled' : 'empty';
+                                        echo '<span class="star ' . $star_class . '">★</span>';
+                                    }
+                                    
+                                    echo '</div>';
+                                    echo '<span class="date-time">' . date('M d, Y h:i A', strtotime($feedback['date_submitted'])) . '</span>';
+                                    echo '</div>';
+                                    echo '</div>';
+                                    echo '<div class="feedback-content">';
+                                    echo '<p><strong>Type:</strong> ' . htmlspecialchars($feedback['feedback_type']) . '</p>';
+                                    echo '<p><strong>Comments:</strong> ' . htmlspecialchars($feedback['comments']) . '</p>';
+                                    
+                                    if (!empty($feedback['suggestions'])) {
+                                        echo '<p><strong>Suggestions:</strong> ' . htmlspecialchars($feedback['suggestions']) . '</p>';
+                                    }
+                                    
+                                    echo '</div>';
+                                    
+                                    if ($feedback['status'] == 'unread') {
+                                        echo '<div class="feedback-actions">';
+                                        echo '<button onclick="markAsRead(' . $feedback['id'] . ')" class="read-btn" style="background-color: #E0B0FF; color: black; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;">Mark as Read</button>';
+                                        echo '</div>';
+                                    }
+                                    
+                                    echo '</div>';
+                                }
+                            } else {
+                                echo '<div class="no-records">No feedback records found</div>';
+                            }
+                        } else {
+                            echo '<div class="no-records">No feedback table exists yet. Students have not submitted any feedback.</div>';
+                        }
+                        ?>
+                    </div>
+                </div>
+
+                <!-- Leaderboard Section -->
+                <div id="leaderboard" class="admin-section" style="display: none;">
+                    <div class="section-header">
+                        <h2>Attendance Leaderboard</h2>
+                        <a href="#home" class="back-btn">Back to Dashboard</a>
+                    </div>
+                    
+                    <div style="background-color: #E0B0FF; color: black; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: center;">
+                        <h3 style="margin: 0; font-size: 24px;">Most Active Students</h3>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Rank</th>
+                                    <th>Student ID</th>
+                                    <th>Name</th>
+                                    <th>Course</th>
+                                    <th>Year Level</th>
+                                    <th>Attendance Count</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                // Fetch leaderboard data
+                                $leaderboard_query = "SELECT l.*, u.firstname, u.lastname, u.midname, u.course, u.yearlvl 
+                                                    FROM attendance_leaderboard l
+                                                    JOIN users u ON l.student_id = u.idno
+                                                    ORDER BY l.attendance_count DESC
+                                                    LIMIT 50";
+                                $leaderboard_result = mysqli_query($conn, $leaderboard_query);
+                                
+                                if (mysqli_num_rows($leaderboard_result) > 0) {
+                                    $rank = 1;
+                                    while ($entry = mysqli_fetch_assoc($leaderboard_result)) {
+                                        // Map course ID to name
+                                        $course_name = "";
+                                        if (isset($courses[$entry['course']])) {
+                                            $course_name = $courses[$entry['course']];
+                                        }
+                                        
+                                        echo "<tr>";
+                                        echo "<td>" . $rank . "</td>";
+                                        echo "<td>" . htmlspecialchars($entry['student_id']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($entry['lastname'] . ", " . $entry['firstname'] . " " . $entry['midname']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($course_name) . "</td>";
+                                        echo "<td>" . htmlspecialchars($entry['yearlvl']) . "</td>";
+                                        echo "<td>" . htmlspecialchars($entry['attendance_count']) . "</td>";
+                                        echo "</tr>";
+                                        
+                                        $rank++;
+                                    }
+                                } else {
+                                    echo "<tr><td colspan='6' style='text-align: center;'>No leaderboard data found</td></tr>";
+                                }
+                                ?>
+                            </tbody>
+                        </table>
+                </div>
+            </div>
+
+                <!-- Admin Lab Schedules Section -->
+                <div id="lab-schedules" class="admin-section" style="display: none; background-color: #e0b0ff; padding: 20px; min-height: 100vh;">
+                    <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 20px;">
+                        <h2 style="margin: 0; color: white;">Laboratory Schedules</h2>
+                        <div style="background-color: #8A2BE2; border-radius: 5px; padding: 2px;">
+                            <button class="add-btn" onclick="openScheduleModal()" style="background-color: #8A2BE2; color: white; border: 2px solid white; padding: 8px 15px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; font-weight: 500;">
+                                <i class="fa fa-plus" style="margin-right: 5px;"></i> Add New Schedule
+                            </button>
+                            </div>
+                        </div>
+
+                    <div class="filter-controls" style="background-color: #fff; padding: 20px; border-radius: 10px; margin: 0 20px 20px 20px; display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <div class="filter-group" style="flex: 1; min-width: 200px;">
+                            <label for="roomFilter" style="display: block; margin-bottom: 8px; font-weight: 500; color: #333;">Filter by Room</label>
+                            <select id="roomFilter" onchange="filterSchedules()" style="width: 100%; padding: 10px 12px; border-radius: 5px; border: 1px solid #ddd; appearance: menulist;">
+                                <option value="all">All Rooms</option>
+                                <option value="517">Room 517</option>
+                                    <option value="526">Room 526</option>
+                                    <option value="528">Room 528</option>
+                                    <option value="530">Room 530</option>
+                                    <option value="547">Room 547</option>
+                                    <option value="MAC">MAC Lab</option>
+                                <option value="524">Room 524</option>
+                                </select>
+                            </div>
+                            
+                        <div class="filter-group" style="flex: 1; min-width: 200px;">
+                            <label for="dayFilter" style="display: block; margin-bottom: 8px; font-weight: 500; color: #333;">Filter by Day</label>
+                            <select id="dayFilter" onchange="filterSchedules()" style="width: 100%; padding: 10px 12px; border-radius: 5px; border: 1px solid #ddd; appearance: menulist;">
+                                <option value="all">All Days</option>
+                                <option value="Monday">Monday</option>
+                                <option value="Tuesday">Tuesday</option>
+                                <option value="Wednesday">Wednesday</option>
+                                <option value="Thursday">Thursday</option>
+                                <option value="Friday">Friday</option>
+                                <option value="Saturday">Saturday</option>
+                                </select>
+                            </div>
+                            
+                        <div class="filter-group" style="flex: 2; min-width: 300px;">
+                            <label for="searchSchedule" style="display: block; margin-bottom: 8px; font-weight: 500; color: #333;">Search</label>
+                            <div style="position: relative;">
+                                <input type="text" id="searchSchedule" onkeyup="filterSchedules()" placeholder="Search by course or instructor..." style="width: 100%; padding: 10px 35px 10px 12px; border-radius: 5px; border: 1px solid #ddd;">
+                                <i class="fa fa-search" style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: #666;"></i>
+                                </div>
+                            </div>
+                            
+                        <button onclick="resetFilters()" class="reset-btn" style="background-color: #343a40; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; flex: 0 0 auto; font-weight: 500;">
+                            <i class="fa fa-refresh" style="margin-right: 5px;"></i> Reset
+                        </button>
+                            </div>
+                            
+                    <div id="scheduleContainer" style="padding: 0 20px;">
+                        <!-- This container will hold each room's schedule -->
+                        <?php
+                        // Get unique rooms
+                        $rooms_query = "SELECT DISTINCT room FROM lab_schedules ORDER BY room ASC";
+                        $rooms_result = mysqli_query($conn, $rooms_query);
+                        
+                        while ($room_row = mysqli_fetch_assoc($rooms_result)) {
+                            $room = $room_row['room'];
+                            
+                            // Count schedules for this room
+                            $count_query = "SELECT COUNT(*) as count FROM lab_schedules WHERE room = '$room'";
+                            $count_result = mysqli_query($conn, $count_query);
+                            $count = mysqli_fetch_assoc($count_result)['count'];
+                            
+                            echo '<div class="room-schedule" data-room="' . $room . '" style="margin-bottom: 30px; display: block;">';
+                            echo '<div class="room-header" style="background-color: #8A2BE2; color: white; padding: 10px 20px; border-radius: 5px 5px 0 0; display: flex; justify-content: space-between; align-items: center;">';
+                            echo '<h3 style="margin: 0; font-weight: 600;"><i class="fa fa-building" style="margin-right: 10px;"></i> Laboratory Room ' . $room . '</h3>';
+                            echo '<span class="schedule-count" style="background-color: white; color: #8A2BE2; padding: 3px 10px; border-radius: 20px; font-weight: bold;">' . $count . ' Schedule(s)</span>';
+                            echo '</div>';
+                            
+                            echo '<div class="schedule-table-wrapper" style="background-color: white; overflow-x: auto; border-radius: 0 0 5px 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">';
+                            echo '<table class="schedule-table" style="width: 100%; border-collapse: collapse;">';
+                            
+                            // Table header
+                            echo '<thead>';
+                            echo '<tr style="background-color: #f8f9fa; border-bottom: 1px solid #dee2e6;">';
+                            echo '<th style="padding: 15px 10px; text-align: left; width: 120px; color: #333; font-weight: 600;">Time</th>';
+                            echo '<th style="padding: 15px 10px; text-align: center; color: #333; font-weight: 600;">Monday</th>';
+                            echo '<th style="padding: 15px 10px; text-align: center; color: #333; font-weight: 600;">Tuesday</th>';
+                            echo '<th style="padding: 15px 10px; text-align: center; color: #333; font-weight: 600;">Wednesday</th>';
+                            echo '<th style="padding: 15px 10px; text-align: center; color: #333; font-weight: 600;">Thursday</th>';
+                            echo '<th style="padding: 15px 10px; text-align: center; color: #333; font-weight: 600;">Friday</th>';
+                            echo '<th style="padding: 15px 10px; text-align: center; color: #333; font-weight: 600;">Saturday</th>';
+                            echo '</tr>';
+                            echo '</thead>';
+                            
+                            echo '<tbody>';
+                            
+                            // Time slots
+                            $time_slots = [
+                                '7:00:00 - 8:00:00', 
+                                '8:00:00 - 9:30:00', 
+                                '9:30:00 - 11:00:00', 
+                                '11:00:00 - 12:30:00',
+                                '12:30:00 - 15:00:00',
+                                '15:00:00 - 16:30:00',
+                                '16:30:00 - 18:00:00'
+                            ];
+                            
+                            foreach ($time_slots as $time_slot) {
+                                echo '<tr style="border-bottom: 1px solid #f0f0f0;">';
+                                echo '<td style="padding: 15px 10px; text-align: left; font-weight: 500; color: #333; background-color: #f8f9fa;">' . $time_slot . '</td>';
+                                
+                                // For each day of the week
+                                $days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                                foreach ($days as $day) {
+                                    // Check if there's a class scheduled
+                                    $schedule_query = "SELECT * FROM lab_schedules WHERE room = '$room' AND day_of_week = '$day' AND time_slot = '$time_slot'";
+                                    $schedule_result = mysqli_query($conn, $schedule_query);
+                                    
+                                    echo '<td style="padding: 15px; background-color: #f9f0ff; transition: background-color 0.2s ease;">';
+                                    
+                                    if (mysqli_num_rows($schedule_result) > 0) {
+                                        $schedule = mysqli_fetch_assoc($schedule_result);
+                                        
+                                        echo '<div class="class-schedule" style="border-left: 3px solid #8A2BE2; padding-left: 10px;">';
+                                        echo '<div class="course-code" style="font-weight: bold; color: #8A2BE2;">' . htmlspecialchars($schedule['course_code']) . '</div>';
+                                        echo '<div class="instructor" style="font-size: 0.9em; color: #333;">' . htmlspecialchars($schedule['instructor']) . '</div>';
+                                        echo '<div class="actions" style="margin-top: 5px; display: flex; gap: 5px;">';
+                                        echo '<button onclick="editSchedule(' . $schedule['id'] . ')" class="edit-btn" style="background-color: #ffc107; color: #212529; border: none; padding: 2px 5px; border-radius: 3px; cursor: pointer; font-size: 0.8em;"><i class="fa fa-edit"></i></button>';
+                                        echo '<button onclick="deleteSchedule(' . $schedule['id'] . ')" class="delete-btn" style="background-color: #dc3545; color: white; border: none; padding: 2px 5px; border-radius: 3px; cursor: pointer; font-size: 0.8em;"><i class="fa fa-trash"></i></button>';
+                                        echo '</div>';
+                                        echo '</div>';
+                            } else {
+                                        echo '<div class="vacant" style="color: #9b7fb3; font-style: italic; text-align: center;">Vacant</div>';
+                                    }
+                                    
+                                    echo '</td>';
+                                }
+                                
+                                echo '</tr>';
+                            }
+                            
+                            echo '</tbody>';
+                            echo '</table>';
+                            echo '</div>';
+                            echo '</div>';
+                        }
+                        ?>
+                </div>
+
+                    <script>
+                        function filterSchedules() {
+                            const roomFilter = document.getElementById('roomFilter').value;
+                            const dayFilter = document.getElementById('dayFilter').value;
+                            const searchQuery = document.getElementById('searchSchedule').value.toLowerCase();
+                            
+                            // Get all room schedules
+                            const roomSchedules = document.querySelectorAll('.room-schedule');
+                            
+                            // Iterate through each room schedule
+                            roomSchedules.forEach(roomSchedule => {
+                                const room = roomSchedule.getAttribute('data-room');
+                                let matchesRoom = roomFilter === 'all' || room === roomFilter;
+                                
+                                // If room doesn't match, hide the entire schedule
+                                if (!matchesRoom) {
+                                    roomSchedule.style.display = 'none';
+                                    return;
+                                }
+                                
+                                // If we're filtering by day or search term, we need to check individual cells
+                                if (dayFilter !== 'all' || searchQuery !== '') {
+                                    const dayIndex = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].indexOf(dayFilter);
+                                    const rows = roomSchedule.querySelectorAll('tbody tr');
+                                    
+                                    // Check if any class in this room matches the criteria
+                                    let hasMatch = false;
+                                    
+                                    rows.forEach(row => {
+                                        const cells = row.querySelectorAll('td');
+                                        
+                                        // Skip the first cell (time slot)
+                                        for (let i = 1; i < cells.length; i++) {
+                                            // Skip cells that don't match the day filter
+                                            if (dayFilter !== 'all' && i - 1 !== dayIndex) continue;
+                                            
+                                            const cell = cells[i];
+                                            const courseElement = cell.querySelector('.course-code');
+                                            const instructorElement = cell.querySelector('.instructor');
+                                            
+                                            // Skip vacant cells
+                                            if (!courseElement || !instructorElement) continue;
+                                            
+                                            const courseText = courseElement.textContent.toLowerCase();
+                                            const instructorText = instructorElement.textContent.toLowerCase();
+                                            
+                                            // Check if the cell matches the search query
+                                            if (searchQuery === '' || courseText.includes(searchQuery) || instructorText.includes(searchQuery)) {
+                                                hasMatch = true;
+                                                break;
+                                            }
+                                        }
+                                        
+                                        if (hasMatch) return;
+                                    });
+                                    
+                                    roomSchedule.style.display = hasMatch ? 'block' : 'none';
+            } else {
+                                    roomSchedule.style.display = 'block';
+                                }
+                            });
+                        }
+                        
+                        function resetFilters() {
+                            document.getElementById('roomFilter').value = 'all';
+                            document.getElementById('dayFilter').value = 'all';
+                            document.getElementById('searchSchedule').value = '';
+                            filterSchedules();
+                        }
+    </script>
+    </div>
+
+                <h3 id="computer-control-heading" style="margin-bottom: 20px; color: #E0B0FF;">Computer Control</h3>
+
+<div class="lab-selection" style="margin-bottom: 20px; text-align: center;">
+    <select id="controlLabSelector" onchange="loadControlComputers()" style="padding: 8px 15px; border-radius: 5px; border: 2px solid #E0B0FF; width: 300px; max-width: 100%;">
+        <option value="">Select Laboratory</option>
+        <option value="524">Room 524</option>
+        <option value="526">Room 526</option>
+        <option value="528">Room 528</option>
+        <option value="530">Room 530</option>
+        <option value="547">Room 547</option>
+        <option value="MAC">MAC Lab</option>
+    </select>
+</div>
+
+<div class="computer-status-legend" style="display: flex; justify-content: center; gap: 20px; margin-bottom: 20px;">
+    <div class="status-item" style="display: flex; align-items: center; gap: 5px;">
+        <div class="color-box" style="width: 20px; height: 20px; border-radius: 4px; background-color: #8fda8f;"></div>
+        <span>Vacant</span>
+        </div>
+    <div class="status-item" style="display: flex; align-items: center; gap: 5px;">
+        <div class="color-box" style="width: 20px; height: 20px; border-radius: 4px; background-color: #ff8080;"></div>
+        <span>Occupied</span>
+    </div>
+    <div class="status-item" style="display: flex; align-items: center; gap: 5px;">
+        <div class="color-box" style="width: 20px; height: 20px; border-radius: 4px; background-color: #e0b0ff;"></div>
+        <span>Reserved</span>
+                </div>
+    <div class="status-item" style="display: flex; align-items: center; gap: 5px;">
+        <div class="color-box" style="width: 20px; height: 20px; border-radius: 4px; background-color: #888888;"></div>
+        <span>Locked</span>
+                </div>
+                </div>
+                
+<div class="instructions" style="background-color: #f8f8f8; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #E0B0FF;">
+    <p style="margin: 0; color: #333;">Select a laboratory to view and manage computers. Click on a computer to toggle its locked/unlocked status. Locked computers cannot be used for sit-ins or reservations.</p>
+                </div>
+                
+<div id="controlComputersGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 15px; margin-top: 20px;">
+    <div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">
+        <p>Please select a laboratory to view computers</p>
+    </div>
+                </div>
+                
+<div class="total-status" style="margin-top: 30px; text-align: center;">
+    <div id="lab-stats" style="display: inline-block; background-color: #f8f8f8; padding: 15px; border-radius: 8px;">
+        <p style="margin: 0;">Select a laboratory to view statistics</p>
+        </div>
+    </div>
+
+    <script>
+// Computer Control Functions
+function loadControlComputers() {
+    const labId = document.getElementById('controlLabSelector').value;
+    if (!labId) {
+        document.getElementById('controlComputersGrid').innerHTML = 
+            '<div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">' +
+            '<p>Please select a laboratory to view computers</p></div>';
+        return;
+    }
+    
+    // Show a loading message
+    document.getElementById('controlComputersGrid').innerHTML = 
+        '<div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">' +
+        '<p>Loading computers for Lab ' + labId + '...</p></div>';
+    
+    // Fetch computer status data
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', 'get_computer_status.php?lab=' + labId, true);
+    
+    xhr.onload = function() {
+        if (this.status === 200) {
+            try {
+                console.log("Raw response:", this.responseText); // Debug
+                
+                // Parse the response JSON
+                const computers = JSON.parse(this.responseText);
+                console.log("Parsed computers:", computers); // Debug
+                
+                // Check if we got data back
+                if (!computers || !computers.length) {
+                    document.getElementById('controlComputersGrid').innerHTML = 
+                        '<div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">' +
+                        '<p>No computer data available for this lab</p></div>';
+                    return;
+                }
+                
+                // Generate the computer grid
+                let html = '';
+                const total = computers.length;
+                
+                for (let i = 0; i < total; i++) {
+                    const computer = computers[i];
+                    
+                    // Determine status and color
+                    let statusColor = '#8fda8f'; // Default green for vacant
+                    let statusText = 'Vacant';
+                    let iconHtml = '';
+                    
+                    if (computer.locked) {
+                        statusColor = '#888888'; // Gray for locked
+                        statusText = 'Locked';
+                        iconHtml = '<div style="margin-top: 5px;"><i class="fa fa-lock"></i></div>';
+                    } else if (computer.status === 'occupied') {
+                        statusColor = '#ff8080'; // Red for occupied
+                        statusText = 'Occupied';
+                    } else if (computer.status === 'reserved') {
+                        statusColor = '#e0b0ff'; // Purple for reserved
+                        statusText = 'Reserved';
+                    }
+                    
+                    // Create computer element
+                    html += '<div class="computer-item" data-pc="' + computer.id + '" data-lab="' + labId + '" data-locked="' + computer.locked + '" ' +
+                         'style="background-color: ' + statusColor + '; padding: 15px; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.3s ease;" ' +
+                         'onclick="toggleComputerStatus(\'' + labId + '\', ' + computer.id + ')">' +
+                        '<div style="font-weight: bold; margin-bottom: 5px;">PC ' + computer.id + '</div>' +
+                        '<div style="font-size: 13px; text-transform: capitalize;">' + statusText + '</div>' +
+                        iconHtml +
+                    '</div>';
+                }
+                
+                document.getElementById('controlComputersGrid').innerHTML = html;
+                
+                // Update lab stats
+                const vacantCount = computers.filter(c => !c.locked && c.status === 'vacant').length;
+                const occupiedCount = computers.filter(c => c.status === 'occupied').length;
+                const reservedCount = computers.filter(c => c.status === 'reserved').length;
+                const lockedCount = computers.filter(c => c.locked).length;
+                
+                document.getElementById('lab-stats').innerHTML = 
+                    '<strong>Lab ' + labId + '</strong> | ' +
+                    '<span style="color: #8fda8f;">Vacant: ' + vacantCount + '</span> | ' +
+                    '<span style="color: #ff8080;">Occupied: ' + occupiedCount + '</span> | ' +
+                    '<span style="color: #e0b0ff;">Reserved: ' + reservedCount + '</span> | ' +
+                    '<span style="color: #888888;">Locked: ' + lockedCount + '</span> | ' +
+                    'Total PCs: ' + total;
+                
+            } catch (e) {
+                console.error('Error parsing JSON response:', e);
+                document.getElementById('controlComputersGrid').innerHTML = 
+                    '<div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">' +
+                    '<p>Error processing data. Please try again.</p>' +
+                    '<p>Details: ' + e.message + '</p>' +
+                    '<p>Response text: ' + this.responseText.substring(0, 100) + '...</p></div>';
+            }
+                } else {
+            document.getElementById('controlComputersGrid').innerHTML = 
+                '<div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">' +
+                '<p>Error loading computers. Server returned status: ' + this.status + '</p></div>';
+        }
+    };
+    
+    xhr.onerror = function() {
+        document.getElementById('controlComputersGrid').innerHTML = 
+            '<div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">' +
+            '<p>Network error occurred. Please try again.</p></div>';
+    };
+    
+    xhr.send();
+}
+
+function toggleComputerStatus(labId, computerId) {
+    if (!confirm('Are you sure you want to toggle the status of PC ' + computerId + ' in Lab ' + labId + '?')) {
+        return;
+    }
+    
+    // Create form data to send
+    const formData = new FormData();
+    formData.append('lab', labId);
+    formData.append('computer', computerId);
+    
+    // Show loading state
+    const computerElement = document.querySelector('.computer-item[data-pc="' + computerId + '"]');
+    if (computerElement) {
+        computerElement.style.opacity = '0.5';
+    }
+    
+    // Send request to toggle computer status
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'toggle_computer_status.php', true);
+    
+    xhr.onload = function() {
+        if (this.status === 200) {
+            // Reload the computer grid to reflect changes
+            loadControlComputers();
+                } else {
+            alert('Error toggling computer status. Server returned status: ' + this.status);
+            if (computerElement) {
+                computerElement.style.opacity = '1';
+            }
+        }
+    };
+    
+    xhr.onerror = function() {
+        alert('Network error occurred. Please try again.');
+        if (computerElement) {
+            computerElement.style.opacity = '1';
+        }
+    };
+    
+    xhr.send(formData);
+}
+    </script>   
+
+<!-- End Computer Control Section -->argin-right: 20px;">Lab Status</h3>
+                    <div style="display: flex; align-items: center;">
+                        <div style="display: flex; align-items: center; margin-right: 20px;">
+                            <div style="width: 15px; height: 15px; background-color: #8fda8f; border-radius: 50%; margin-right: 5px;"></div>
+                            <span>Vacant</span>
+                        </div>
+                        <div style="display: flex; align-items: center; margin-right: 20px;">
+                            <div style="width: 15px; height: 15px; background-color: #ff8080; border-radius: 50%; margin-right: 5px;"></div>
+                            <span>Occupied</span>
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 15px; height: 15px; background-color: #e0b0ff; border-radius: 50%; margin-right: 5px;"></div>
+                            <span>Reserved</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="computersGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 15px; padding: 10px;">
+                    <!-- Computer cards will be loaded here -->
+                    <div class="placeholder-message" style="grid-column: 1/-1; text-align: center; padding: 50px;">
+                        <p>Please select a laboratory to view computers</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Profile Modal -->
+    <div id="editProfileModal" class="modal">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeEditProfileModal()">&times;</span>
+            <h2 style="color: #F7B4C6; text-align: center; border-bottom: 2px solid #F7B4C6; padding-bottom: 10px;">Edit Profile</h2>
+            <form action="update_profile.php" method="post" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="firstname" style="color: #444; font-weight: 500;">First Name:</label>
+                    <input type="text" id="firstname" name="firstname" value="<?php echo htmlspecialchars($user['firstname']); ?>" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 15px;">
+                </div>
+                <div class="form-group">
+                    <label for="midname" style="color: #444; font-weight: 500;">Middle Name:</label>
+                    <input type="text" id="midname" name="midname" value="<?php echo htmlspecialchars($user['midname']); ?>" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 15px;">
+                </div>
+                <div class="form-group">
+                    <label for="lastname" style="color: #444; font-weight: 500;">Last Name:</label>
+                    <input type="text" id="lastname" name="lastname" value="<?php echo htmlspecialchars($user['lastname']); ?>" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 15px;">
+                </div>
+                <div class="form-group">
+                    <label for="email" style="color: #444; font-weight: 500;">Email:</label>
+                    <input type="email" id="email" name="email" value="<?php echo htmlspecialchars($user['email']); ?>" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 15px;">
+                </div>
+                <div class="form-group">
+                    <label for="course" style="color: #444; font-weight: 500;">Course:</label>
+                    <select id="course" name="course" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 15px;">
+                        <?php foreach ($courses as $key => $value): ?>
+                            <option value="<?php echo $key; ?>" <?php echo ($user['course'] == $key) ? 'selected' : ''; ?>>
+                                <?php echo $value; ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="yearlvl" style="color: #444; font-weight: 500;">Year Level:</label>
+                    <select id="yearlvl" name="yearlvl" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 15px;">
+                        <?php for ($i = 1; $i <= 4; $i++): ?>
+                            <option value="<?php echo $i; ?>" <?php echo ($user['yearlvl'] == $i) ? 'selected' : ''; ?>>
+                                <?php echo $i; ?>
+                            </option>
+                        <?php endfor; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="photo" style="color: #444; font-weight: 500;">Profile Photo:</label>
+                    <div style="display: flex; align-items: center; margin-bottom: 15px;">
+                        <label for="photo" style="display: inline-block; padding: 10px 15px; background-color: #F7B4C6; color: white; border-radius: 4px; cursor: pointer; margin-right: 10px;">Choose File</label>
+                        <span id="file-name-display">No file chosen</span>
+                        <input type="file" id="photo" name="photo" accept="image/*" style="display: none;" onchange="updateFileName(this)">
+                        <input type="hidden" name="current_photo" value="<?php echo htmlspecialchars($user['photo'] ?? ''); ?>">
+                    </div>
+                    <?php if (!empty($user['photo'])): ?>
+                        <div style="margin-bottom: 15px;">
+                            <p style="margin-bottom: 5px; color: #666;">Current Photo:</p>
+                            <img src="<?php echo 'uploads/' . $user['photo']; ?>" alt="Current Photo" style="max-width: 100px; max-height: 100px; border-radius: 5px;">
+                        </div>
+                    <?php endif; ?>
+                </div>
+                <div class="form-group">
+                    <label for="password" style="color: #444; font-weight: 500;">New Password (leave blank to keep current):</label>
+                    <input type="password" id="password" name="password" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 25px;">
+                </div>
+                <div style="text-align: center; margin-top: 20px;">
+                    <button type="submit" style="background-color: #F7B4C6; color: white; border: none; padding: 12px 25px; border-radius: 5px; font-size: 16px; cursor: pointer; transition: all 0.3s ease;">Update Profile</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        function updateFileName(input) {
+            const fileName = input.files[0] ? input.files[0].name : 'No file chosen';
+            document.getElementById('file-name-display').textContent = fileName;
+        }
+        
+        // Update closeEditProfileModal function
+        function closeEditProfileModal() {
+            document.getElementById('editProfileModal').style.display = 'none';
+        }
+    </script>
+</body>
+<script>
+    // Debugging script - execute after page load
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log("Debugging student sidebar links...");
+        
+        if (!document.querySelector('.sidebar')) {
+            console.error("Sidebar not found!");
+            return;
+        }
+        
+        // Check if we're on the student page
+        if (!document.getElementById('profile-section')) {
+            console.log("Not on student page, skipping checks");
+            return;
+        }
+        
+        // Check all student sidebar links
+        const links = document.querySelectorAll('.sidebar ul li a');
+        console.log("Found " + links.length + " sidebar links");
+        
+        links.forEach(link => {
+            console.log("Link:", link.innerText, "onclick:", link.getAttribute('onclick'));
+            
+            // Add a direct click handler to log when links are clicked
+            link.addEventListener('click', function(e) {
+                console.log("CLICKED:", this.innerText);
+            });
+        });
+        
+        // Check if all student sections exist
+        const sections = [
+            'profile-section', 'rules', 'lab-rules', 'history', 
+            'reservation', 'student-lab-resources', 'feedback', 'lab-schedules'
+        ];
+        
+        sections.forEach(section => {
+            const el = document.getElementById(section);
+            console.log("Section", section, "exists:", !!el);
+        });
+        
+        // Add a global direct toggle function for manual testing
+        window.toggleStudentSection = function(sectionId) {
+            // Hide all sections
+            document.querySelectorAll('.section-placeholder, #profile-section').forEach(section => {
+                section.style.display = 'none';
+            });
+            
+            // Show the requested section
+            const section = document.getElementById(sectionId);
+            if (section) {
+                section.style.display = 'block';
+                console.log("Manually toggled section:", sectionId);
+            } else {
+                console.error("Cannot find section:", sectionId);
+            }
+        };
+        
+        console.log("Use toggleStudentSection('section-id') in the console to manually show a section");
+        
+        // Add a function to list all sections on the page
+        window.listAllSections = function() {
+            console.log("All sections on the page:");
+            document.querySelectorAll('div[id]').forEach(div => {
+                console.log(`- ${div.id} (display: ${div.style.display})`);
+            });
+        };
+        
+        // Execute it once at startup
+        listAllSections();
+    });
+</script>
+
+<!-- Lab Schedule Modal -->
+<div id="scheduleModal" class="modal">
+    <div class="modal-content" style="max-width: 600px; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.2);">
+        <span class="close-btn" onclick="closeScheduleModal()" style="position: absolute; right: 15px; top: 15px; font-size: 24px; cursor: pointer;">&times;</span>
+        <h2 style="color: #E0B0FF; text-align: center; border-bottom: 2px solid #E0B0FF; padding-bottom: 15px; margin-top: 10px;">Add Laboratory Schedule</h2>
+        <form id="scheduleForm" method="post" style="padding: 20px;">
+            <input type="hidden" id="schedule_id" name="schedule_id" value="">
+            
+            <div class="form-group" style="margin-bottom: 20px;">
+                <label for="schedule_room" style="display: block; margin-bottom: 8px; font-weight: 500;">Laboratory Room:</label>
+                <select id="schedule_room" name="room" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f8f9fa;">
+                    <option value="">Select a room</option>
+                    <option value="517">Room 517</option>
+                    <option value="526">Room 526</option>
+                    <option value="528">Room 528</option>
+                    <option value="530">Room 530</option>
+                    <option value="547">Room 547</option>
+                    <option value="MAC">MAC Lab</option>
+                    <option value="524">Room 524</option>
+                </select>
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 20px;">
+                <label for="schedule_day" style="display: block; margin-bottom: 8px; font-weight: 500;">Day of Week:</label>
+                <select id="schedule_day" name="day_of_week" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f8f9fa;">
+                    <option value="">Select a day</option>
+                    <option value="Monday">Monday</option>
+                    <option value="Tuesday">Tuesday</option>
+                    <option value="Wednesday">Wednesday</option>
+                    <option value="Thursday">Thursday</option>
+                    <option value="Friday">Friday</option>
+                    <option value="Saturday">Saturday</option>
+                </select>
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 20px;">
+                <label for="schedule_time" style="display: block; margin-bottom: 8px; font-weight: 500;">Time Slot:</label>
+                <select id="schedule_time" name="time_slot" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f8f9fa;">
+                    <option value="">Select a time slot</option>
+                    <option value="7:00:00 - 8:00:00">7:00 AM - 8:00 AM</option>
+                    <option value="8:00:00 - 9:30:00">8:00 AM - 9:30 AM</option>
+                    <option value="9:30:00 - 11:00:00">9:30 AM - 11:00 AM</option>
+                    <option value="11:00:00 - 12:30:00">11:00 AM - 12:30 PM</option>
+                    <option value="12:30:00 - 15:00:00">12:30 PM - 3:00 PM</option>
+                    <option value="15:00:00 - 16:30:00">3:00 PM - 4:30 PM</option>
+                    <option value="16:30:00 - 18:00:00">4:30 PM - 6:00 PM</option>
+                </select>
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 20px;">
+                <label for="schedule_course" style="display: block; margin-bottom: 8px; font-weight: 500;">Course Code:</label>
+                <input type="text" id="schedule_course" name="course_code" required placeholder="e.g., COMPROG, DIGILOG, INTPROG" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f8f9fa;">
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 30px;">
+                <label for="schedule_instructor" style="display: block; margin-bottom: 8px; font-weight: 500;">Instructor Name:</label>
+                <input type="text" id="schedule_instructor" name="instructor" required placeholder="e.g., Mr. Malupitan Jr." style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f8f9fa;">
+            </div>
+            
+            <div style="display: flex; justify-content: center; gap: 15px;">
+                <button type="button" onclick="closeScheduleModal()" style="background-color: #6c757d; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer; font-weight: 500;">Cancel</button>
+                <button type="button" onclick="saveSchedule()" style="background-color: #E0B0FF; color: black; border: none; padding: 12px 30px; border-radius: 5px; cursor: pointer; font-weight: 500;">Save Schedule</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    // Lab Schedule Modal Functions
+    function openScheduleModal() {
+        document.getElementById('scheduleModal').style.display = 'block';
+        document.getElementById('scheduleForm').reset();
+        document.getElementById('schedule_id').value = '';
+    }
+    
+    function closeScheduleModal() {
+        document.getElementById('scheduleModal').style.display = 'none';
+    }
+    
+    function editSchedule(id) {
+        // Fetch schedule data using AJAX
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', `get_schedule.php?id=${id}`, true);
+        xhr.onload = function() {
+            if (this.status === 200) {
+                try {
+                    const schedule = JSON.parse(this.responseText);
+                    document.getElementById('schedule_id').value = schedule.id;
+                    document.getElementById('schedule_room').value = schedule.room;
+                    document.getElementById('schedule_day').value = schedule.day_of_week;
+                    document.getElementById('schedule_time').value = schedule.time_slot;
+                    document.getElementById('schedule_course').value = schedule.course_code;
+                    document.getElementById('schedule_instructor').value = schedule.instructor;
+                    
+                    document.getElementById('scheduleModal').style.display = 'block';
+                } catch (e) {
+                    alert('Error parsing schedule data');
+                }
+            } else {
+                alert('Error fetching schedule data');
+            }
+        };
+        xhr.send();
+    }
+    
+    function saveSchedule() {
+        const form = document.getElementById('scheduleForm');
+        const formData = new FormData(form);
+        
+        // Simple validation
+        const room = document.getElementById('schedule_room').value;
+        const day = document.getElementById('schedule_day').value;
+        const time = document.getElementById('schedule_time').value;
+        const course = document.getElementById('schedule_course').value;
+        const instructor = document.getElementById('schedule_instructor').value;
+        
+        if (!room || !day || !time || !course || !instructor) {
+            alert('Please fill in all the fields');
+            return;
+        }
+        
+        // Add action based on whether we're adding or editing
+        const scheduleId = document.getElementById('schedule_id').value;
+        formData.append('action', scheduleId ? 'update' : 'add');
+        
+        // Send AJAX request
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'save_schedule.php', true);
+        xhr.onload = function() {
+            if (this.status === 200) {
+                const response = this.responseText;
+                if (response.includes('success')) {
+                    alert(scheduleId ? 'Schedule updated successfully' : 'Schedule added successfully');
+                    closeScheduleModal();
+                    window.location.reload(); // Reload to see changes
+                } else {
+                    alert('Error: ' + response);
+                }
+            } else {
+                alert('Error saving schedule');
+            }
+        };
+        xhr.send(formData);
+    }
+    
+    function deleteSchedule(id) {
+        if (confirm('Are you sure you want to delete this schedule?')) {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', 'delete_schedule.php', true);
+            xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+            xhr.onload = function() {
+                if (this.status === 200) {
+                    const response = this.responseText;
+                    if (response.includes('success')) {
+                        alert('Schedule deleted successfully');
+                        window.location.reload(); // Reload to see changes
+                    } else {
+                        alert('Error: ' + response);
+                    }
+                } else {
+                    alert('Error deleting schedule');
+                }
+            };
+            xhr.send(`id=${id}`);
+        }
+    }
+</script>
+
+<script>
+    // Debugging script - execute after page load
+</script>
+</html>
