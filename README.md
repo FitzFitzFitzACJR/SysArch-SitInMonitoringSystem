@@ -19,8 +19,8 @@ PostgreSQL and Prisma.
 | f     | Notifications (in-app + email), announcements, feedback         | ✅    |
 | g     | Points, leaderboard, semesters                                  | ✅    |
 | h     | Reports, exports, analytics, audit log                          | ✅    |
-| i     | Data migration from the original `sysarch.sql`                  | ⏳    |
-| j     | Extras, tests, README, deployment guide                         |       |
+| i     | Data migration from the original `sysarch.sql`                  | ✅    |
+| j     | Extras, tests, README, deployment guide                         | ⏳    |
 
 ## Running locally
 
@@ -61,3 +61,36 @@ src/features/<x>/  one folder per domain: schemas.ts (Zod, shared) · service.ts
 src/lib/           db, auth, permissions, action wrapper, email, time helpers
 tests/unit/        Vitest
 ```
+
+## Migrating from the original PHP system
+
+`scripts/legacy-import` reads the old `sysarch.sql` MySQL dump and imports it into this
+database in a single transaction (all or nothing). Run it after migrating and seeding:
+
+```bash
+npm run legacy:import -- --file path/to/sysarch.sql --dry-run
+npm run legacy:import -- --file path/to/sysarch.sql --uploads path/to/old/uploads --default-lab 524
+```
+
+What it does:
+
+- **Users**: keeps the old bcrypt password hashes (they're upgraded to argon2 at each
+  person's next login; any plain-text password is hashed on import). The old admin
+  (`idno` `00`) becomes a super admin who must change their password. Course numbers map
+  to BSIT/BSA/BSCS/BSCRIM. `--uploads` brings profile photos across (re-encoded).
+- **Points & sessions**: old `points_log` rows become history, plus an opening balance,
+  so every balance equals its ledger.
+- **Sit-ins**: the old app wrote `session_start` with MySQL's clock (Manila) and
+  `session_end` with PHP's `date()` (XAMPP's default Europe/Berlin), which is why it
+  showed a −360-minute duration. Each column is read in its own zone (`--mysql-tz`,
+  `--php-tz`); that sit-in really lasted 14 seconds. Sit-ins left "active" or forgotten
+  for days are closed at the time limit or closing time, as the new system would have.
+- **Reservations**: rows where the language was saved as the purpose are swapped back;
+  past bookings are closed (so the no-show job can't penalise them); rows without a room
+  are skipped unless you pass `--default-lab`.
+- **Everything else**: announcements (inactive ones archived), both feedback tables, link
+  resources (old local files must be re-uploaded), class schedules. The leaderboard table
+  isn't needed: it's now calculated from sit-ins.
+
+It prints a table of what was imported/skipped and a note for every correction, and it
+refuses to run twice against the same database.

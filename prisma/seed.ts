@@ -7,6 +7,7 @@
 import "dotenv/config";
 import { createPrismaClient } from "../src/lib/prisma-client";
 import { hashPassword } from "../src/lib/password";
+import { academicTermFor } from "../src/features/semesters/calendar";
 
 const db = createPrismaClient();
 
@@ -51,15 +52,6 @@ function label12h(minutes: number) {
   return `${h % 12 === 0 ? 12 : h % 12}:${m} ${h < 12 ? "AM" : "PM"}`;
 }
 
-/** Philippine academic calendar: 1st sem Aug–Dec, 2nd sem Jan–May, midyear Jun–Jul. */
-function semesterFor(date: Date) {
-  const y = date.getUTCFullYear();
-  const month = date.getUTCMonth() + 1;
-  if (month >= 8) return { name: `1st Semester AY ${y}–${y + 1}`, startsOn: `${y}-08-01`, endsOn: `${y}-12-31` };
-  if (month <= 5) return { name: `2nd Semester AY ${y - 1}–${y}`, startsOn: `${y}-01-01`, endsOn: `${y}-05-31` };
-  return { name: `Midyear AY ${y - 1}–${y}`, startsOn: `${y}-06-01`, endsOn: `${y}-07-31` };
-}
-
 async function main() {
   const settings = await db.settings.upsert({
     where: { id: 1 },
@@ -95,7 +87,7 @@ async function main() {
     });
   }
 
-  const term = semesterFor(new Date());
+  const term = academicTermFor(new Date());
   const semester = await db.semester.upsert({
     where: { name: term.name },
     create: {
