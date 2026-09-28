@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Native/Node-only packages that must not be bundled.
-  serverExternalPackages: ["@node-rs/argon2", "pg", "sharp", "exceljs"],
+  serverExternalPackages: ["@node-rs/argon2", "pg", "sharp", "exceljs", "pdfkit"],
   logging: {
     // Dev-only call logging prints every action argument, including passwords and reset
     // tokens, to the terminal. Off.

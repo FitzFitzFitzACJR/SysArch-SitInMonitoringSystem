@@ -18,8 +18,8 @@ PostgreSQL and Prisma.
 | e     | Live lab map + computer issue reporting                         | ✅    |
 | f     | Notifications (in-app + email), announcements, feedback         | ✅    |
 | g     | Points, leaderboard, semesters                                  | ✅    |
-| h     | Reports, exports, analytics, audit log                          | ⏳    |
-| i     | Data migration from the original `sysarch.sql`                  |       |
+| h     | Reports, exports, analytics, audit log                          | ✅    |
+| i     | Data migration from the original `sysarch.sql`                  | ⏳    |
 | j     | Extras, tests, README, deployment guide                         |       |
 
 ## Running locally

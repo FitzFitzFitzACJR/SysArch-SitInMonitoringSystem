@@ -51,6 +51,13 @@
 :root {
   /* Single-series data colour (validated for contrast on the card surface; see dataviz). */
   --viz-bar: #2a78d6;
+  /* Sequential ramp for heatmaps: step 1 = least, 6 = most. */
+  --heat-1: #cde2fb;
+  --heat-2: #9ec5f4;
+  --heat-3: #6da7ec;
+  --heat-4: #3987e5;
+  --heat-5: #256abf;
+  --heat-6: #184f95;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -87,6 +94,12 @@
 
 .dark {
   --viz-bar: #3987e5;
+  --heat-1: #104281;
+  --heat-2: #1c5cab;
+  --heat-3: #2a78d6;
+  --heat-4: #5598e7;
+  --heat-5: #86b6ef;
+  --heat-6: #b7d3f6;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);

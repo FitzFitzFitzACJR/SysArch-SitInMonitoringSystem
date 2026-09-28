@@ -6,6 +6,7 @@ import {
   ChartColumn,
   CalendarDays,
   CircleUser,
+  FileBarChart,
   FolderOpen,
   History,
   LayoutDashboard,
@@ -14,6 +15,7 @@ import {
   MessageSquareText,
   Monitor,
   ScanLine,
+  ScrollText,
   Settings,
   Trophy,
   ShieldCheck,
@@ -56,6 +58,8 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   leaderboard: Trophy,
   stats: ChartColumn,
   semesters: CalendarRange,
+  reports: FileBarChart,
+  audit: ScrollText,
 };
 
 export function AppSidebar({ items }: { items: NavItem[] }) {

@@ -20,7 +20,9 @@ export type NavIcon =
   | "resources"
   | "leaderboard"
   | "stats"
-  | "semesters";
+  | "semesters"
+  | "reports"
+  | "audit";
 
 export type NavItem = { href: string; label: string; icon: NavIcon; permission?: Permission };
 
@@ -49,9 +51,11 @@ const STAFF_NAV: NavItem[] = [
   { href: "/admin/feedback", label: "Feedback", icon: "feedback", permission: "feedback:read" },
   { href: "/admin/resources", label: "Lab resources", icon: "resources", permission: "resource:manage" },
   { href: "/admin/schedules", label: "Class schedules", icon: "schedules", permission: "schedule:manage" },
+  { href: "/admin/reports", label: "Reports", icon: "reports", permission: "report:view" },
   { href: "/admin/leaderboard", label: "Leaderboard", icon: "leaderboard", permission: "points:award" },
   { href: "/admin/semesters", label: "Semesters", icon: "semesters", permission: "semester:manage" },
   { href: "/admin/staff", label: "Staff accounts", icon: "staff", permission: "staff:manage" },
+  { href: "/admin/audit", label: "Audit log", icon: "audit", permission: "audit:view" },
   { href: "/admin/settings", label: "Settings", icon: "settings", permission: "settings:manage" },
 ];
 
