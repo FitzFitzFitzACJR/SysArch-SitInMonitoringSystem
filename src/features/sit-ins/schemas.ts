@@ -29,6 +29,6 @@ export const CancelSitInSchema = z.object({
   reason: z.string().trim().min(3, "Say why (e.g. started by mistake)").max(200),
 });
 
-export const LabIdSchema = z.object({ labId: z.string().min(1) });
+export const LabIdSchema = z.object({ labId: z.string().min(1), studentId: z.string().optional() });
 
 export type StartSitInInput = z.output<typeof StartSitInSchema>;

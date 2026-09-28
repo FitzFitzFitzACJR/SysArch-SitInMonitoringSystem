@@ -5,6 +5,12 @@ import { DomainError, NotFoundError } from "@/lib/errors";
 import { uniqueViolation } from "@/lib/prisma-errors";
 import { writeAudit } from "@/features/audit/service";
 import { labWindow } from "@/features/labs/hours";
+import {
+  computersReservedNow,
+  findCheckInReservation,
+  slotLabel,
+  sweepReservations,
+} from "@/features/reservations/service";
 import { labHours } from "@/features/labs/rules";
 import { notify } from "@/features/notifications/service";
 import { adjustBalance, awardPoints } from "@/features/points/ledger";
@@ -66,18 +72,38 @@ export async function lookupStudent(query: string) {
     );
   }
   const { sitIns, ...rest } = student;
-  return { ...rest, activeSitIn: sitIns[0] ?? null };
+  const booking = sitIns[0] ? null : await findCheckInReservation(student.id);
+  return {
+    ...rest,
+    activeSitIn: sitIns[0] ?? null,
+    // Today's approved booking, if any: the desk pre-fills it and starting links to it.
+    reservation: booking && {
+      id: booking.id,
+      slot: slotLabel(booking.timeSlot),
+      lab: booking.lab,
+      computer: booking.computer,
+      languageId: booking.languageId,
+      purpose: booking.purpose,
+    },
+  };
 }
 
 export type LookupResult = Awaited<ReturnType<typeof lookupStudent>>;
 
-/** Computers a new sit-in can use right now: in service and nobody on them. */
-export function availableComputers(labId: string) {
-  return db.computer.findMany({
-    where: { labId, state: "ACTIVE", sitIns: { none: { status: "ACTIVE" } } },
-    orderBy: { number: "asc" },
-    select: { id: true, number: true },
-  });
+/**
+ * Computers a new sit-in can use right now for this student: in service, nobody on them,
+ * and not held by someone else's booking for the current slot.
+ */
+export async function availableComputers(labId: string, studentId?: string) {
+  const [free, heldByOthers] = await Promise.all([
+    db.computer.findMany({
+      where: { labId, state: "ACTIVE", sitIns: { none: { status: "ACTIVE" } } },
+      orderBy: { number: "asc" },
+      select: { id: true, number: true },
+    }),
+    computersReservedNow(labId, studentId),
+  ]);
+  return free.filter((c) => !heldByOthers.has(c.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +144,13 @@ export async function startSitIn(input: StartSitInInput, actor: Actor) {
       if (computer.state === "LOCKED") throw new DomainError(`PC ${computer.number} is locked.`);
       if (computer.state === "MAINTENANCE") throw new DomainError(`PC ${computer.number} is under maintenance.`);
       if (computer.sitIns.length) throw new DomainError(RACE_MESSAGES.one_active_per_computer);
+      if ((await computersReservedNow(lab.id, student.id, tx)).has(computer.id)) {
+        throw new DomainError(`PC ${computer.number} is reserved by another student for this time slot.`);
+      }
+
+      // A booking for today in this lab is used by this check-in (whether or not staff picked it).
+      const booking = await findCheckInReservation(student.id, tx);
+      const reservationId = booking && booking.labId === lab.id ? booking.id : null;
 
       const language = await tx.language.findFirst({ where: { id: input.languageId, isActive: true } });
       if (!language) throw new DomainError("Select a valid programming language.");
@@ -136,8 +169,12 @@ export async function startSitIn(input: StartSitInInput, actor: Actor) {
           startedAt: now,
           endsAt: slot.endsAt,
           startedById: actor.id,
+          reservationId,
         },
       });
+      if (reservationId) {
+        await tx.reservation.update({ where: { id: reservationId }, data: { status: "FULFILLED" } });
+      }
 
       // The session is used at check-in, as in the original system (refunded if cancelled).
       const after = await adjustBalance(tx, {
@@ -330,6 +367,7 @@ export async function sweepIfStale(minIntervalMs = 30_000) {
   if (Date.now() - lastSweep < minIntervalMs) return;
   lastSweep = Date.now();
   await sweepSitIns();
+  await sweepReservations();
 }
 
 // ---------------------------------------------------------------------------

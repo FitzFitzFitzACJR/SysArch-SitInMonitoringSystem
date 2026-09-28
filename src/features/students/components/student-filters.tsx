@@ -90,7 +90,7 @@ function FilterSelect({
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger aria-label={label} className="w-full sm:w-36">
-        <SelectValue />
+        <SelectValue>{options.find((o) => o.value === value)?.label}</SelectValue>
       </SelectTrigger>
       <SelectContent>
         {options.map((o) => (

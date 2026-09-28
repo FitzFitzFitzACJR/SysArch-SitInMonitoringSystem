@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { sweepReservations } from "@/features/reservations/service";
 import { sweepSitIns } from "@/features/sit-ins/service";
 
 // Scheduled jobs. Vercel Cron (or any external scheduler) calls
@@ -7,6 +8,9 @@ import { sweepSitIns } from "@/features/sit-ins/service";
 // Every job is idempotent, so running one late, early or twice is harmless.
 const JOBS: Record<string, () => Promise<unknown>> = {
   "sit-ins": () => sweepSitIns(),
+  reservations: () => sweepReservations(),
+  // One endpoint for schedulers that only allow a single job (e.g. a free external cron).
+  all: async () => ({ sitIns: await sweepSitIns(), reservations: await sweepReservations() }),
 };
 
 export async function GET(req: Request, ctx: RouteContext<"/api/cron/[job]">) {

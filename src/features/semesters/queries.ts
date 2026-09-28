@@ -19,3 +19,11 @@ export async function getSessionAllotment(client: Tx | typeof db = db) {
   const semester = await getCurrentSemester(settings.timezone, new Date(), client);
   return { sessions: semester?.sessionAllotment ?? settings.defaultSessions, semesterId: semester?.id ?? null };
 }
+
+/** The semester containing a calendar date (UTC-midnight, as stored in @db.Date columns). */
+export function getSemesterForDate(date: Date, client: Tx | typeof db = db) {
+  return client.semester.findFirst({
+    where: { startsOn: { lte: date }, endsOn: { gte: date } },
+    orderBy: { startsOn: "desc" },
+  });
+}

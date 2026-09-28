@@ -151,13 +151,24 @@ export function CheckInConsole({
                   No sessions left. They can earn more with behavior points, or you can adjust their sessions.
                 </p>
               ) : (
-                <StartForm
-                  studentId={student.id}
-                  studentName={student.firstName}
-                  labs={labs}
-                  languages={languages}
-                  onStarted={reset}
-                />
+                <>
+                  {student.reservation && (
+                    <p className="mb-3 rounded-md bg-emerald-500/10 p-2 text-sm text-emerald-800 dark:text-emerald-200">
+                      Booked today: {student.reservation.lab.name}, {student.reservation.slot}
+                      {student.reservation.computer && `, PC ${student.reservation.computer.number}`}. Starting in that
+                      lab uses this booking.
+                    </p>
+                  )}
+                  <StartForm
+                    key={student.id}
+                    studentId={student.id}
+                    studentName={student.firstName}
+                    labs={labs}
+                    languages={languages}
+                    booking={student.reservation}
+                    onStarted={reset}
+                  />
+                </>
               )}
             </div>
           </div>
@@ -172,37 +183,42 @@ function StartForm({
   studentName,
   labs,
   languages,
+  booking,
   onStarted,
 }: {
   studentId: string;
   studentName: string;
   labs: Option[];
   languages: Option[];
+  booking: LookupResult["reservation"];
   onStarted: () => void;
 }) {
-  // Remember the desk's lab between students: staff usually run one lab.
-  const [labId, setLabId] = useState(() =>
-    typeof window === "undefined" ? "" : (localStorage.getItem("sitin.lab") ?? ""),
+  // Pre-fill from today's booking; otherwise remember the desk's lab between students.
+  const [labId, setLabId] = useState(
+    () => booking?.lab.id ?? (typeof window === "undefined" ? "" : (localStorage.getItem("sitin.lab") ?? "")),
   );
   const [computers, setComputers] = useState<{ id: string; number: number }[] | null>(null);
   const [computerId, setComputerId] = useState("");
-  const [languageId, setLanguageId] = useState("");
-  const [purpose, setPurpose] = useState("");
+  const [languageId, setLanguageId] = useState(booking?.languageId ?? "");
+  const [purpose, setPurpose] = useState(booking?.purpose ?? "");
   const [error, setError] = useState<string>();
   const [pending, startTransition] = useTransition();
 
   useEffect(() => {
     if (!labId || !labs.some((l) => l.id === labId)) return;
     let cancelled = false;
-    availableComputersAction({ labId }).then((r) => {
+    availableComputersAction({ labId, studentId }).then((r) => {
       if (cancelled) return;
-      setComputers(r.ok ? r.data : []);
-      setComputerId("");
+      const list = r.ok ? r.data : [];
+      setComputers(list);
+      // Pre-select the booked PC when it's free.
+      const booked = booking?.computer?.id;
+      setComputerId(booked && booking?.lab.id === labId && list.some((c) => c.id === booked) ? booked : "");
     });
     return () => {
       cancelled = true;
     };
-  }, [labId, labs]);
+  }, [labId, labs, studentId, booking]);
 
   function start() {
     setError(undefined);
@@ -211,7 +227,7 @@ function StartForm({
       if (!result.ok) {
         setError(result.fieldErrors ? Object.values(result.fieldErrors)[0]?.[0] : result.error);
         // Someone may have just taken the PC: refresh the list.
-        availableComputersAction({ labId }).then((r) => r.ok && setComputers(r.data));
+        availableComputersAction({ labId, studentId }).then((r) => r.ok && setComputers(r.data));
         return;
       }
       toast.success(`${studentName} checked in`);

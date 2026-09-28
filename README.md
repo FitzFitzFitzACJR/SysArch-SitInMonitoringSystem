@@ -14,8 +14,8 @@ PostgreSQL and Prisma.
 | a     | Setup, auth, roles/permissions, settings, seed                  | ✅    |
 | b     | Students (bulk import, profile), labs, computers                | ✅    |
 | c     | Sit-in lifecycle: QR check-in/out, time limits, auto-end        | ✅    |
-| d     | Reservations: calendar, conflicts, computer selection, no-shows | ⏳    |
-| e     | Live lab map + computer issue reporting                         |       |
+| d     | Reservations: calendar, conflicts, computer selection, no-shows | ✅    |
+| e     | Live lab map + computer issue reporting                         | ⏳    |
 | f     | Notifications (in-app + email), announcements, feedback         |       |
 | g     | Points, leaderboard, semesters                                  |       |
 | h     | Reports, exports, analytics, audit log                          |       |

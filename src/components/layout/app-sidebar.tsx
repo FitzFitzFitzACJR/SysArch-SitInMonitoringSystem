@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  CalendarClock,
+  CalendarDays,
   CircleUser,
   History,
   LayoutDashboard,
@@ -36,6 +38,8 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   profile: CircleUser,
   sitIns: ScanLine,
   history: History,
+  reservations: CalendarDays,
+  schedules: CalendarClock,
 };
 
 export function AppSidebar({ items }: { items: NavItem[] }) {

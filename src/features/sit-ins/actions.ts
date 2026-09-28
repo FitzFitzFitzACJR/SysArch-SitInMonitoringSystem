@@ -15,7 +15,9 @@ const staff = { permission: "sitIn:manage" } as const;
 
 export const lookupStudentAction = createAction(LookupSchema, staff, ({ query }) => lookupStudent(query));
 
-export const availableComputersAction = createAction(LabIdSchema, staff, ({ labId }) => availableComputers(labId));
+export const availableComputersAction = createAction(LabIdSchema, staff, ({ labId, studentId }) =>
+  availableComputers(labId, studentId),
+);
 
 export const startSitInAction = createAction(StartSitInSchema, staff, async (input, { user, ip }) => {
   await startSitIn(input, { id: user.id, ip });
