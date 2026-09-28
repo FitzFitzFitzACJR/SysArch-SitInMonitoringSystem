@@ -1,6 +1,16 @@
 "use client";
 
-import { CircleUser, LayoutDashboard, Monitor, Settings, ShieldCheck, Users, type LucideIcon } from "lucide-react";
+import {
+  CircleUser,
+  History,
+  LayoutDashboard,
+  Monitor,
+  ScanLine,
+  Settings,
+  ShieldCheck,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Brand } from "@/components/brand";
@@ -24,6 +34,8 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   labs: Monitor,
   staff: ShieldCheck,
   profile: CircleUser,
+  sitIns: ScanLine,
+  history: History,
 };
 
 export function AppSidebar({ items }: { items: NavItem[] }) {

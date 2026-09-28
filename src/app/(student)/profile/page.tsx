@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { OwnPhoto, ProfileForm } from "@/features/students/components/profile-form";
+import { StudentQr } from "@/features/sit-ins/components/student-qr";
 import { listActiveCourses } from "@/features/students/queries";
 import { db } from "@/lib/db";
 import { requireStudent } from "@/lib/session";
@@ -25,6 +26,7 @@ export default async function ProfilePage() {
         courseId: true,
         yearLevel: true,
         photoUrl: true,
+        qrToken: true,
       },
     }),
     listActiveCourses(),
@@ -54,18 +56,28 @@ export default async function ProfilePage() {
             />
           </CardContent>
         </Card>
-        <Card className="content-start">
-          <CardHeader>
-            <CardTitle>Security</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Button variant="outline" asChild className="w-full">
-              <Link href="/change-password">
-                <KeyRound /> Change password
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
+        <div className="grid content-start gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Check-in code</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <StudentQr token={me.qrToken} idNumber={me.idNumber} rotatable />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Security</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Button variant="outline" asChild className="w-full">
+                <Link href="/change-password">
+                  <KeyRound /> Change password
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </>
   );

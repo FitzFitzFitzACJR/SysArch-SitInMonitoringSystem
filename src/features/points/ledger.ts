@@ -1,6 +1,7 @@
 import "server-only";
 import type { LedgerReason } from "@/generated/prisma/enums";
 import type { Tx } from "@/lib/db";
+import { pointsToSessions } from "@/features/sit-ins/rules";
 
 export type LedgerEntry = {
   userId: string;
@@ -46,4 +47,25 @@ export async function adjustBalance(tx: Tx, entry: LedgerEntry) {
     },
   });
   return user;
+}
+
+/**
+ * Adds points (or a penalty, if negative) and immediately converts every full block of
+ * `pointsPerSession` into a bonus session, each step recorded in the ledger.
+ * Returns how many sessions were granted.
+ */
+export async function awardPoints(tx: Tx, entry: LedgerEntry & { pointsDelta: number }, pointsPerSession: number) {
+  const { pointsBalance } = await adjustBalance(tx, entry);
+  const { sessions, pointsUsed } = pointsToSessions(pointsBalance, pointsPerSession);
+  if (sessions > 0) {
+    await adjustBalance(tx, {
+      userId: entry.userId,
+      reason: "POINTS_CONVERSION",
+      pointsDelta: -pointsUsed,
+      sessionsDelta: sessions,
+      note: `${pointsUsed} points → ${sessions} session${sessions === 1 ? "" : "s"}`,
+      semesterId: entry.semesterId,
+    });
+  }
+  return sessions;
 }

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { dateOnlyInTz, formatMinutes12h, hhmmToMinutes, minutesToHHMM } from "@/lib/time";
+import {
+  dateOnlyInTz,
+  formatMinutes12h,
+  hhmmToMinutes,
+  localTimeToInstant,
+  minutesOfDayInTz,
+  minutesToHHMM,
+  tzOffsetMs,
+} from "@/lib/time";
 
 describe("time helpers", () => {
   it("round-trips HH:MM and minutes", () => {
@@ -23,5 +31,27 @@ describe("time helpers", () => {
     const instant = new Date("2026-09-28T20:00:00Z");
     expect(dateOnlyInTz(instant, "Asia/Manila").toISOString()).toBe("2026-09-29T00:00:00.000Z");
     expect(dateOnlyInTz(instant, "UTC").toISOString()).toBe("2026-09-28T00:00:00.000Z");
+  });
+});
+
+describe("timezone conversion", () => {
+  it("knows Manila is UTC+8", () => {
+    expect(tzOffsetMs(new Date("2026-09-28T00:00:00Z"), "Asia/Manila")).toBe(8 * 3_600_000);
+  });
+
+  it("turns a lab closing time into the right instant", () => {
+    // 18:00 in Manila on Sept 28 is 10:00 UTC.
+    const day = new Date("2026-09-28T00:00:00Z");
+    expect(localTimeToInstant(day, 18 * 60, "Asia/Manila").toISOString()).toBe("2026-09-28T10:00:00.000Z");
+  });
+
+  it("handles DST days in zones that have them", () => {
+    // New York springs forward on 2026-03-08; 12:00 local that day is 16:00 UTC (EDT, UTC-4).
+    const day = new Date("2026-03-08T00:00:00Z");
+    expect(localTimeToInstant(day, 12 * 60, "America/New_York").toISOString()).toBe("2026-03-08T16:00:00.000Z");
+  });
+
+  it("reads the local time of day", () => {
+    expect(minutesOfDayInTz(new Date("2026-09-28T01:30:00Z"), "Asia/Manila")).toBe(9 * 60 + 30);
   });
 });

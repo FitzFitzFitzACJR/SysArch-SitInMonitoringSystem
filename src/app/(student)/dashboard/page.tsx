@@ -1,8 +1,14 @@
+import { Clock } from "lucide-react";
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/app-shell";
 import { StatCard } from "@/components/stat-card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getCurrentSemester } from "@/features/semesters/queries";
 import { getSettings } from "@/features/settings/queries";
+import { Countdown } from "@/features/sit-ins/components/countdown";
+import { StudentQr } from "@/features/sit-ins/components/student-qr";
+import { getActiveSitInFor } from "@/features/sit-ins/queries";
+import { sweepIfStale } from "@/features/sit-ins/service";
 import { db } from "@/lib/db";
 import { requireStudent } from "@/lib/session";
 
@@ -10,12 +16,15 @@ export const metadata: Metadata = { title: "Dashboard" };
 
 export default async function StudentDashboard() {
   const session = await requireStudent();
+  await sweepIfStale();
   const settings = await getSettings();
-  const [student, semester] = await Promise.all([
+  const [student, semester, active] = await Promise.all([
     db.user.findUniqueOrThrow({
       where: { id: session.id },
       select: {
         firstName: true,
+        idNumber: true,
+        qrToken: true,
         remainingSessions: true,
         pointsBalance: true,
         lifetimePoints: true,
@@ -24,9 +33,11 @@ export default async function StudentDashboard() {
       },
     }),
     getCurrentSemester(settings.timezone),
+    getActiveSitInFor(session.id),
   ]);
 
   const pointsToNext = settings.pointsPerSession - (Math.max(student.pointsBalance, 0) % settings.pointsPerSession);
+  const time = new Intl.DateTimeFormat("en-PH", { timeStyle: "short", timeZone: settings.timezone });
 
   return (
     <>
@@ -39,18 +50,49 @@ export default async function StudentDashboard() {
           .filter(Boolean)
           .join(" · ")}
       />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard
-          label="Remaining sit-in sessions"
-          value={student.remainingSessions}
-          hint={student.remainingSessions === 0 ? "Ask the lab staff about extra sessions." : undefined}
-        />
-        <StatCard
-          label="Behavior points"
-          value={student.pointsBalance}
-          hint={`${pointsToNext} more point${pointsToNext === 1 ? "" : "s"} until your next bonus session`}
-        />
-        <StatCard label="Lifetime points" value={student.lifetimePoints} />
+
+      <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
+        <div className="grid content-start gap-4">
+          {active && (
+            <Card className="border-sky-500/40 bg-sky-500/5">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Clock className="size-5" /> You&apos;re checked in
+                </CardTitle>
+                <CardDescription>
+                  {active.lab.name}, PC {active.computer?.number} · {active.language.name} · since{" "}
+                  {time.format(active.startedAt)}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="text-lg">
+                <Countdown endsAt={active.endsAt.toISOString()} warnBeforeMinutes={settings.warnBeforeMinutes} />
+                <span className="text-muted-foreground text-sm"> · ends at {time.format(active.endsAt)}</span>
+              </CardContent>
+            </Card>
+          )}
+          <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
+            <StatCard
+              label="Remaining sit-in sessions"
+              value={student.remainingSessions}
+              hint={student.remainingSessions === 0 ? "Ask the lab staff about extra sessions." : undefined}
+            />
+            <StatCard
+              label="Behavior points"
+              value={student.pointsBalance}
+              hint={`${pointsToNext} more until your next bonus session`}
+            />
+            <StatCard label="Lifetime points" value={student.lifetimePoints} />
+          </div>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Your check-in code</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <StudentQr token={student.qrToken} idNumber={student.idNumber} />
+          </CardContent>
+        </Card>
       </div>
     </>
   );
