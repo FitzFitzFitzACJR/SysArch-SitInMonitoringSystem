@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { needsRulesAcceptance } from "@/features/rules/rules";
 import { computeSitInWindow, minutesLeft, pointsToSessions, shouldWarn } from "@/features/sit-ins/rules";
 
 const at = (hhmm: string) => new Date(`2026-09-28T${hhmm}:00Z`);
@@ -44,5 +45,17 @@ describe("warnings and countdown", () => {
   it("rounds minutes left up and floors at zero", () => {
     expect(minutesLeft(at("12:00"), new Date("2026-09-28T11:58:30Z"))).toBe(2);
     expect(minutesLeft(at("12:00"), at("12:05"))).toBe(0);
+  });
+});
+
+describe("needsRulesAcceptance", () => {
+  const settings = { rulesText: "Be kind.", rulesVersion: 2 };
+  it("asks until the current version is accepted", () => {
+    expect(needsRulesAcceptance(settings, { rulesAcceptedVer: null })).toBe(true);
+    expect(needsRulesAcceptance(settings, { rulesAcceptedVer: 1 })).toBe(true);
+    expect(needsRulesAcceptance(settings, { rulesAcceptedVer: 2 })).toBe(false);
+  });
+  it("doesn't ask when there are no rules", () => {
+    expect(needsRulesAcceptance({ rulesText: "  ", rulesVersion: 3 }, { rulesAcceptedVer: null })).toBe(false);
   });
 });

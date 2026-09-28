@@ -146,6 +146,11 @@ export function CheckInConsole({
                 </div>
               ) : student.status !== "ACTIVE" ? (
                 <p className="text-destructive text-sm">This account isn&apos;t active, so it can&apos;t sit in.</p>
+              ) : student.rulesPending ? (
+                <p className="text-destructive text-sm">
+                  They haven&apos;t accepted the current lab rules yet. Ask them to open their dashboard and accept
+                  them.
+                </p>
               ) : student.remainingSessions <= 0 ? (
                 <p className="text-destructive text-sm">
                   No sessions left. They can earn more with behavior points, or you can adjust their sessions.

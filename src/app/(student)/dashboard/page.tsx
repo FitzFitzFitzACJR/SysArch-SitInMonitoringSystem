@@ -6,6 +6,8 @@ import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AnnouncementCard } from "@/features/announcements/components/announcement-card";
 import { listAnnouncementsForStudent } from "@/features/announcements/service";
+import { RulesAcceptance } from "@/features/rules/components/rules-acceptance";
+import { needsRulesAcceptance } from "@/features/rules/rules";
 import { ReportIssueDialog } from "@/features/issues/components/report-issue-dialog";
 import { getCurrentSemester } from "@/features/semesters/queries";
 import { getSettings } from "@/features/settings/queries";
@@ -30,6 +32,7 @@ export default async function StudentDashboard() {
         firstName: true,
         idNumber: true,
         qrToken: true,
+        rulesAcceptedVer: true,
         remainingSessions: true,
         pointsBalance: true,
         lifetimePoints: true,
@@ -59,6 +62,13 @@ export default async function StudentDashboard() {
 
       <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
         <div className="grid content-start gap-4">
+          {needsRulesAcceptance(settings, student) && (
+            <RulesAcceptance
+              rules={settings.rulesText}
+              version={settings.rulesVersion}
+              updated={student.rulesAcceptedVer !== null}
+            />
+          )}
           {active && (
             <Card className="border-sky-500/40 bg-sky-500/5">
               <CardHeader>

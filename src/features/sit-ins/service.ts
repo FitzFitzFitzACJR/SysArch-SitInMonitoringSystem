@@ -18,6 +18,7 @@ import { adjustBalance, awardPoints } from "@/features/points/ledger";
 import { getCurrentSemester } from "@/features/semesters/queries";
 import { getSettings } from "@/features/settings/queries";
 import { formatMinutes12h, minutesOfDayInTz } from "@/lib/time";
+import { needsRulesAcceptance } from "@/features/rules/rules";
 import { computeSitInWindow, shouldWarn } from "./rules";
 import { QR_PREFIX, type StartSitInInput } from "./schemas";
 
@@ -50,6 +51,7 @@ export async function lookupStudent(query: string) {
       yearLevel: true,
       remainingSessions: true,
       pointsBalance: true,
+      rulesAcceptedVer: true,
       course: { select: { code: true } },
       sitIns: {
         where: { status: "ACTIVE" },
@@ -72,11 +74,13 @@ export async function lookupStudent(query: string) {
         : "No student with that ID number.",
     );
   }
-  const { sitIns, ...rest } = student;
+  const settings = await getSettings();
+  const { sitIns, rulesAcceptedVer, ...rest } = student;
   const booking = sitIns[0] ? null : await findCheckInReservation(student.id);
   return {
     ...rest,
     activeSitIn: sitIns[0] ?? null,
+    rulesPending: needsRulesAcceptance(settings, { rulesAcceptedVer }),
     // Today's approved booking, if any: the desk pre-fills it and starting links to it.
     reservation: booking && {
       id: booking.id,
@@ -121,6 +125,11 @@ export async function startSitIn(input: StartSitInInput, actor: Actor) {
       if (!student) throw new NotFoundError("Student");
       if (student.status !== "ACTIVE") throw new DomainError("This student's account isn't active.");
       if (student.remainingSessions <= 0) throw new DomainError("This student has no remaining sit-in sessions.");
+      if (needsRulesAcceptance(settings, student)) {
+        throw new DomainError(
+          "This student hasn't accepted the current lab rules yet. They can do it on their dashboard.",
+        );
+      }
 
       const active = await tx.sitIn.findFirst({ where: { studentId: student.id, status: "ACTIVE" } });
       if (active) throw new DomainError(RACE_MESSAGES.one_active_per_student);
