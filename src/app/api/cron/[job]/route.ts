@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { flushEmails } from "@/features/notifications/email-outbox";
 import { sweepReservations } from "@/features/reservations/service";
+import { sweepSemesters } from "@/features/semesters/service";
 import { sweepSitIns } from "@/features/sit-ins/service";
 
 // Scheduled jobs. Vercel Cron (or any external scheduler) calls
@@ -11,8 +12,10 @@ const JOBS: Record<string, () => Promise<unknown>> = {
   "sit-ins": () => sweepSitIns(),
   reservations: () => sweepReservations(),
   emails: () => flushEmails(),
+  semesters: () => sweepSemesters(),
   // One endpoint for schedulers that only allow a single job (e.g. a free external cron).
   all: async () => ({
+    semesters: await sweepSemesters(),
     sitIns: await sweepSitIns(),
     reservations: await sweepReservations(),
     emails: await flushEmails(),

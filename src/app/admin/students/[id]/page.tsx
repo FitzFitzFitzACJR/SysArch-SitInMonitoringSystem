@@ -8,6 +8,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { AwardDialog } from "@/features/points/components/award-dialog";
 import { LEDGER_REASON_LABELS } from "@/features/points/labels";
 import { getSessionAllotment } from "@/features/semesters/queries";
 import { getSettings } from "@/features/settings/queries";
@@ -29,7 +30,8 @@ export default async function StudentDetailPage({ params }: PageProps<"/admin/st
     getSessionAllotment(),
   ]);
   if (!student) notFound();
-  const dateFormat = dateTimeFormatter((await getSettings()).timezone);
+  const settings = await getSettings();
+  const dateFormat = dateTimeFormatter(settings.timezone);
 
   const hasHistory = student._count.sitIns + student._count.reservations > 0;
   const signed = (n: number) => (n > 0 ? `+${n}` : String(n));
@@ -103,7 +105,14 @@ export default async function StudentDetailPage({ params }: PageProps<"/admin/st
                     : "Never signed in."}
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="grid gap-2">
+              {can(user.role, "points:award") && student.status !== "ARCHIVED" && (
+                <AwardDialog
+                  studentId={student.id}
+                  studentName={student.firstName}
+                  pointsPerSession={settings.pointsPerSession}
+                />
+              )}
               <StudentAdminActions
                 student={{
                   id: student.id,

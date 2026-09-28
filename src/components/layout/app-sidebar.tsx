@@ -2,6 +2,8 @@
 
 import {
   CalendarClock,
+  CalendarRange,
+  ChartColumn,
   CalendarDays,
   CircleUser,
   FolderOpen,
@@ -13,6 +15,7 @@ import {
   Monitor,
   ScanLine,
   Settings,
+  Trophy,
   ShieldCheck,
   TriangleAlert,
   Users,
@@ -50,6 +53,9 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   announcements: Megaphone,
   feedback: MessageSquareText,
   resources: FolderOpen,
+  leaderboard: Trophy,
+  stats: ChartColumn,
+  semesters: CalendarRange,
 };
 
 export function AppSidebar({ items }: { items: NavItem[] }) {

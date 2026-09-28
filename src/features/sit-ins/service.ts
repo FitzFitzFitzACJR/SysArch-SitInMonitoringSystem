@@ -11,6 +11,7 @@ import {
   slotLabel,
   sweepReservations,
 } from "@/features/reservations/service";
+import { sweepSemesters } from "@/features/semesters/service";
 import { labHours } from "@/features/labs/rules";
 import { notify } from "@/features/notifications/service";
 import { adjustBalance, awardPoints } from "@/features/points/ledger";
@@ -366,6 +367,7 @@ let lastSweep = 0;
 export async function sweepIfStale(minIntervalMs = 30_000) {
   if (Date.now() - lastSweep < minIntervalMs) return;
   lastSweep = Date.now();
+  await sweepSemesters(); // first, so a new term's allotment is in place before anything else
   await sweepSitIns();
   await sweepReservations();
 }

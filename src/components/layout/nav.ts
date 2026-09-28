@@ -17,7 +17,10 @@ export type NavIcon =
   | "issues"
   | "announcements"
   | "feedback"
-  | "resources";
+  | "resources"
+  | "leaderboard"
+  | "stats"
+  | "semesters";
 
 export type NavItem = { href: string; label: string; icon: NavIcon; permission?: Permission };
 
@@ -27,6 +30,8 @@ const STUDENT_NAV: NavItem[] = [
   { href: "/reservations", label: "Reservations", icon: "reservations" },
   { href: "/lab-map", label: "Lab availability", icon: "map" },
   { href: "/history", label: "Sit-in history", icon: "history" },
+  { href: "/stats", label: "My statistics", icon: "stats" },
+  { href: "/leaderboard", label: "Leaderboard", icon: "leaderboard" },
   { href: "/announcements", label: "Announcements", icon: "announcements" },
   { href: "/resources", label: "Lab resources", icon: "resources" },
   { href: "/feedback", label: "Feedback", icon: "feedback" },
@@ -44,6 +49,8 @@ const STAFF_NAV: NavItem[] = [
   { href: "/admin/feedback", label: "Feedback", icon: "feedback", permission: "feedback:read" },
   { href: "/admin/resources", label: "Lab resources", icon: "resources", permission: "resource:manage" },
   { href: "/admin/schedules", label: "Class schedules", icon: "schedules", permission: "schedule:manage" },
+  { href: "/admin/leaderboard", label: "Leaderboard", icon: "leaderboard", permission: "points:award" },
+  { href: "/admin/semesters", label: "Semesters", icon: "semesters", permission: "semester:manage" },
   { href: "/admin/staff", label: "Staff accounts", icon: "staff", permission: "staff:manage" },
   { href: "/admin/settings", label: "Settings", icon: "settings", permission: "settings:manage" },
 ];
