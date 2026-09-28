@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ComputerGrid } from "@/features/labs/components/computer-grid";
 import { LabFormDialog } from "@/features/labs/components/lab-form-dialog";
 import { ResizeLabForm } from "@/features/labs/components/resize-lab-form";
+import { getLabSnapshot } from "@/features/lab-map/snapshot";
 import { getLabWithComputers } from "@/features/labs/queries";
 import { labHours } from "@/features/labs/rules";
 import { getSettings } from "@/features/settings/queries";
@@ -21,8 +22,8 @@ export const metadata: Metadata = { title: "Lab" };
 export default async function LabPage({ params }: PageProps<"/admin/labs/[id]">) {
   const user = await requireStaff("computer:manage");
   const { id } = await params;
-  const [lab, settings] = await Promise.all([getLabWithComputers(id), getSettings()]);
-  if (!lab) notFound();
+  const [lab, snapshot, settings] = await Promise.all([getLabWithComputers(id), getLabSnapshot(id), getSettings()]);
+  if (!lab || !snapshot) notFound();
 
   const hours = labHours(lab, settings);
   const canEditLab = can(user.role, "lab:manage");
@@ -62,24 +63,10 @@ export default async function LabPage({ params }: PageProps<"/admin/labs/[id]">)
       <Card>
         <CardHeader>
           <CardTitle>Computers</CardTitle>
-          <CardDescription>Select computers to lock, unlock or flag for maintenance.</CardDescription>
+          <CardDescription>Updates live. Select computers to lock, unlock or flag for maintenance.</CardDescription>
         </CardHeader>
         <CardContent>
-          <ComputerGrid
-            labId={lab.id}
-            columns={lab.gridColumns}
-            canManage={can(user.role, "computer:manage")}
-            computers={lab.computers.map((pc) => {
-              const student = pc.sitIns[0]?.student;
-              return {
-                id: pc.id,
-                number: pc.number,
-                state: pc.state,
-                note: pc.note,
-                user: student ? { name: `${student.firstName} ${student.lastName}`, idNumber: student.idNumber } : null,
-              };
-            })}
-          />
+          <ComputerGrid initial={snapshot} canManage={can(user.role, "computer:manage")} />
         </CardContent>
       </Card>
 

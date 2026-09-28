@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/app-shell";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ReportIssueDialog } from "@/features/issues/components/report-issue-dialog";
 import { getCurrentSemester } from "@/features/semesters/queries";
 import { getSettings } from "@/features/settings/queries";
 import { Countdown } from "@/features/sit-ins/components/countdown";
@@ -64,9 +65,12 @@ export default async function StudentDashboard() {
                   {time.format(active.startedAt)}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="text-lg">
-                <Countdown endsAt={active.endsAt.toISOString()} warnBeforeMinutes={settings.warnBeforeMinutes} />
-                <span className="text-muted-foreground text-sm"> · ends at {time.format(active.endsAt)}</span>
+              <CardContent className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-lg">
+                  <Countdown endsAt={active.endsAt.toISOString()} warnBeforeMinutes={settings.warnBeforeMinutes} />
+                  <span className="text-muted-foreground text-sm"> · ends at {time.format(active.endsAt)}</span>
+                </div>
+                {active.computer && <ReportIssueDialog pcLabel={`PC ${active.computer.number}`} />}
               </CardContent>
             </Card>
           )}

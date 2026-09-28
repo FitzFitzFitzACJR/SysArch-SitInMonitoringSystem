@@ -6,10 +6,12 @@ import {
   CircleUser,
   History,
   LayoutDashboard,
+  LayoutGrid,
   Monitor,
   ScanLine,
   Settings,
   ShieldCheck,
+  TriangleAlert,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -40,6 +42,8 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   history: History,
   reservations: CalendarDays,
   schedules: CalendarClock,
+  map: LayoutGrid,
+  issues: TriangleAlert,
 };
 
 export function AppSidebar({ items }: { items: NavItem[] }) {

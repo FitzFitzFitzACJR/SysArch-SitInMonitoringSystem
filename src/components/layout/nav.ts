@@ -12,7 +12,9 @@ export type NavIcon =
   | "sitIns"
   | "history"
   | "reservations"
-  | "schedules";
+  | "schedules"
+  | "map"
+  | "issues";
 
 export type NavItem = { href: string; label: string; icon: NavIcon; permission?: Permission };
 
@@ -20,6 +22,7 @@ export type NavItem = { href: string; label: string; icon: NavIcon; permission?:
 const STUDENT_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
   { href: "/reservations", label: "Reservations", icon: "reservations" },
+  { href: "/lab-map", label: "Lab availability", icon: "map" },
   { href: "/history", label: "Sit-in history", icon: "history" },
   { href: "/profile", label: "Profile", icon: "profile" },
 ];
@@ -30,6 +33,7 @@ const STAFF_NAV: NavItem[] = [
   { href: "/admin/reservations", label: "Reservations", icon: "reservations", permission: "reservation:decide" },
   { href: "/admin/students", label: "Students", icon: "students", permission: "student:edit" },
   { href: "/admin/labs", label: "Labs & computers", icon: "labs", permission: "computer:manage" },
+  { href: "/admin/issues", label: "Computer issues", icon: "issues", permission: "issue:resolve" },
   { href: "/admin/schedules", label: "Class schedules", icon: "schedules", permission: "schedule:manage" },
   { href: "/admin/staff", label: "Staff accounts", icon: "staff", permission: "staff:manage" },
   { href: "/admin/settings", label: "Settings", icon: "settings", permission: "settings:manage" },
