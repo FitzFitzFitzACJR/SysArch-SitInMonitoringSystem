@@ -172,7 +172,7 @@ export function ImportWizard({ courseCodes }: { courseCodes: string[] }) {
                             ))}
                           </ul>
                         ) : (
-                          <span className="text-xs text-emerald-600 dark:text-emerald-400">OK</span>
+                          <span className="text-xs text-emerald-700 dark:text-emerald-400">OK</span>
                         )}
                       </TableCell>
                     </TableRow>

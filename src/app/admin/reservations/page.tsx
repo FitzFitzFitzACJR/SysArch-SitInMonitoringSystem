@@ -220,13 +220,13 @@ export default async function AdminReservationsPage({ searchParams }: PageProps<
                                     held === 0 && "text-muted-foreground",
                                     held > 0 && "border-sky-500/40 bg-sky-500/10",
                                     held >= week.capacity && "border-rose-500/50 bg-rose-500/15",
-                                    past && "opacity-50",
+                                    past && "bg-muted/60 border-dashed",
                                     selected && "ring-primary ring-2",
                                   )}
                                 >
                                   {held}/{week.capacity}
                                   {cell.pending > 0 && (
-                                    <span className="ml-1 text-amber-600 dark:text-amber-400">·{cell.pending}?</span>
+                                    <span className="ml-1 text-amber-700 dark:text-amber-400">·{cell.pending}?</span>
                                   )}
                                 </Link>
                               )}
@@ -239,7 +239,7 @@ export default async function AdminReservationsPage({ searchParams }: PageProps<
                 </table>
               </div>
               <p className="text-muted-foreground text-xs">
-                <span className="text-amber-600 dark:text-amber-400">·n?</span> = requests awaiting review. Grey cells
+                <span className="text-amber-700 dark:text-amber-400">·n?</span> = requests awaiting review. Grey cells
                 are classes.
               </p>
 

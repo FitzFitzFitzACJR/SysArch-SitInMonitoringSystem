@@ -46,15 +46,25 @@ export function SitInActions({
     });
   }
 
+  // Accessible names start with the visible text (WCAG 2.5.3) and add whose sit-in it is.
+  const rewardLabel = compact ? "End +pt" : `End & reward (+${rewardPoints})`;
+  const plainLabel = compact ? "End" : "End without reward";
+
   return (
     <div className="flex flex-wrap justify-end gap-1.5">
       {rewardPoints > 0 && (
-        <Button size="sm" onClick={() => end(true)} disabled={pending} title={`End and award ${rewardPoints} point(s)`}>
-          <Award /> {compact ? "End +pt" : `End & reward (+${rewardPoints})`}
+        <Button size="sm" onClick={() => end(true)} disabled={pending} aria-label={`${rewardLabel}, ${studentName}`}>
+          <Award /> {rewardLabel}
         </Button>
       )}
-      <Button size="sm" variant="outline" onClick={() => end(false)} disabled={pending}>
-        <Square /> {compact ? "End" : "End without reward"}
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => end(false)}
+        disabled={pending}
+        aria-label={`${plainLabel}, ${studentName}`}
+      >
+        <Square /> {plainLabel}
       </Button>
       <CancelSitInDialog sitInId={sitInId} studentName={studentName} onDone={onDone} />
     </div>

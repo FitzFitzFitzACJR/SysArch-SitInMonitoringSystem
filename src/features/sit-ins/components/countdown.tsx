@@ -57,7 +57,7 @@ export function Countdown({ endsAt, warnBeforeMinutes }: { endsAt: string; warnB
       className={cn(
         "tabular-nums",
         msLeft <= 0 && "text-destructive font-medium",
-        msLeft > 0 && minutes < warnBeforeMinutes && "font-medium text-amber-600 dark:text-amber-400",
+        msLeft > 0 && minutes < warnBeforeMinutes && "font-medium text-amber-700 dark:text-amber-400",
       )}
     >
       {label}
