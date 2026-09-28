@@ -18,7 +18,7 @@ export async function sendEmail(email: Email): Promise<void> {
     body: JSON.stringify({ from: env.EMAIL_FROM, ...email }),
   });
   if (!res.ok) {
-    // Email is best-effort: log and carry on rather than failing the user's action.
-    console.error(`[email] Resend responded ${res.status}: ${await res.text()}`);
+    // Thrown so the outbox keeps the email queued and retries it later.
+    throw new Error(`Resend responded ${res.status}: ${await res.text()}`);
   }
 }

@@ -1,8 +1,10 @@
 import "server-only";
 import { headers } from "next/headers";
+import { after } from "next/server";
 import { unstable_rethrow } from "next/navigation";
 import type { z } from "zod";
 import type { Role } from "@/generated/prisma/enums";
+import { flushEmails } from "@/features/notifications/email-outbox";
 import { DomainError, ForbiddenError } from "./errors";
 import { can, type Permission } from "./permissions";
 import { clientIp } from "./request";
@@ -49,6 +51,8 @@ export function createAction<S extends z.ZodType, A extends Access, R>(
 
       const ip = clientIp(await headers());
       const data = await handler(parsed.data, { user, ip } as Ctx<A>);
+      // Deliver any emails the action queued, after the response is sent.
+      after(() => flushEmails().catch((e) => console.error("[email-outbox]", e)));
       return { ok: true, data };
     } catch (e) {
       unstable_rethrow(e); // let redirect()/notFound() through

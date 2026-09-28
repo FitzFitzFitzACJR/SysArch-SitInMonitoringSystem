@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { flushEmails } from "@/features/notifications/email-outbox";
 import { sweepReservations } from "@/features/reservations/service";
 import { sweepSitIns } from "@/features/sit-ins/service";
 
@@ -9,8 +10,13 @@ import { sweepSitIns } from "@/features/sit-ins/service";
 const JOBS: Record<string, () => Promise<unknown>> = {
   "sit-ins": () => sweepSitIns(),
   reservations: () => sweepReservations(),
+  emails: () => flushEmails(),
   // One endpoint for schedulers that only allow a single job (e.g. a free external cron).
-  all: async () => ({ sitIns: await sweepSitIns(), reservations: await sweepReservations() }),
+  all: async () => ({
+    sitIns: await sweepSitIns(),
+    reservations: await sweepReservations(),
+    emails: await flushEmails(),
+  }),
 };
 
 export async function GET(req: Request, ctx: RouteContext<"/api/cron/[job]">) {

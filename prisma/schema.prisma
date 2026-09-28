@@ -367,10 +367,16 @@ model Notification {
   link      String?
   readAt    DateTime?
   createdAt DateTime         @default(now())
+  // Transactional email outbox: flagged in the same transaction as the event, sent after
+  // commit (and retried by the cron job), so no email ever describes a rolled-back change.
+  sendEmail     Boolean   @default(false)
+  emailedAt     DateTime?
+  emailAttempts Int       @default(0)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, readAt, createdAt])
+  @@index([sendEmail, emailedAt])
 }
 
 model Feedback {
