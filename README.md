@@ -152,7 +152,7 @@ npm install
 npm run db:up               # Postgres in Docker
 npm run db:deploy           # apply migrations
 npm run db:seed             # labs, computers, slots, admin + demo accounts
-npm run dev                 # http://localhost:3000
+npm run dev                 # http://localhost:3200
 ```
 
 ### Demo accounts
@@ -178,7 +178,8 @@ npm run test:e2e       # Playwright end-to-end + accessibility (needs Docker Pos
 ```
 
 The end-to-end suite creates its own throwaway database, `ccs_e2e`, starts a dev server on
-port 3100, and covers:
+port 3100 (stop your own `npm run dev` first: Next.js allows one dev server per project), and
+covers:
 
 - sign-in errors, forced password change, and role guards
 - the full sit-in lifecycle: lab rules, check-in at the desk, live map, the student's view,

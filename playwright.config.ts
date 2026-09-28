@@ -21,7 +21,7 @@ export default defineConfig({
     ...devices["Desktop Chrome"],
   },
   webServer: {
-    command: `npm run dev -- -p ${PORT}`,
+    command: `npx next dev -p ${PORT}`,
     url: `http://localhost:${PORT}/login`,
     timeout: 180_000,
     reuseExistingServer: false,
