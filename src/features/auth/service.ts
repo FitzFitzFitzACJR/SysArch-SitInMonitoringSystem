@@ -207,6 +207,8 @@ export async function sendPasswordLink(
   ]);
 
   const link = `${env.APP_URL}/reset-password?token=${token}`;
+  // Best-effort: a mail outage must not fail the account change that triggered it (or, for
+  // "forgot password", reveal whether the email exists). Staff can resend from the UI.
   await sendEmail(
     kind === "reset"
       ? {
@@ -219,7 +221,7 @@ export async function sendPasswordLink(
           subject: "Your CCS Sit-In account is ready",
           text: `Hi ${user.firstName},\n\nAn account has been created for you on the CCS Sit-In Monitoring System.\nYour ID number is ${user.idNumber}. Set your password with this link (valid for 7 days):\n\n${link}\n`,
         },
-  );
+  ).catch((e) => console.error("[auth] password link email failed", e));
 }
 
 export async function resetPassword({ token, newPassword }: ResetPasswordInput) {

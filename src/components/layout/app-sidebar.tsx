@@ -4,9 +4,12 @@ import {
   CalendarClock,
   CalendarDays,
   CircleUser,
+  FolderOpen,
   History,
   LayoutDashboard,
   LayoutGrid,
+  Megaphone,
+  MessageSquareText,
   Monitor,
   ScanLine,
   Settings,
@@ -44,6 +47,9 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   schedules: CalendarClock,
   map: LayoutGrid,
   issues: TriangleAlert,
+  announcements: Megaphone,
+  feedback: MessageSquareText,
+  resources: FolderOpen,
 };
 
 export function AppSidebar({ items }: { items: NavItem[] }) {

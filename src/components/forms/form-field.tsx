@@ -73,7 +73,11 @@ export function SelectField<T extends FieldValues, TOut extends FieldValues = T>
             onValueChange={field.onChange}
           >
             <SelectTrigger id={name} aria-invalid={fieldState.invalid} onBlur={field.onBlur} className="w-full">
-              <SelectValue placeholder={placeholder ?? "Select…"} />
+              {/* Explicit label: Radix only knows item text once the list has mounted, so a pre-filled value
+                  would render blank until the menu is opened. */}
+              <SelectValue placeholder={placeholder ?? "Select…"}>
+                {options.find((o) => o.value === String(field.value ?? ""))?.label}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {options.map((o) => (

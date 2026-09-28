@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { NotificationBell } from "@/features/notifications/components/notification-bell";
+import { unreadCount } from "@/features/notifications/queries";
 import { db } from "@/lib/db";
+import { isStaff } from "@/lib/permissions";
 import type { SessionUser } from "@/lib/session";
 import { AppSidebar } from "./app-sidebar";
 import { navFor } from "./nav";
@@ -9,7 +12,10 @@ import { UserMenu } from "./user-menu";
 
 /** Sidebar layout shared by the student and staff areas (collapses to a drawer on phones). */
 export async function AppShell({ user, children }: { user: SessionUser; children: ReactNode }) {
-  const { photoUrl } = await db.user.findUniqueOrThrow({ where: { id: user.id }, select: { photoUrl: true } });
+  const [{ photoUrl }, unread] = await Promise.all([
+    db.user.findUniqueOrThrow({ where: { id: user.id }, select: { photoUrl: true } }),
+    unreadCount(user.id),
+  ]);
   return (
     <SidebarProvider>
       <a
@@ -23,6 +29,10 @@ export async function AppShell({ user, children }: { user: SessionUser; children
         <header className="bg-background/80 sticky top-0 z-10 flex h-14 items-center gap-2 border-b px-3 backdrop-blur sm:px-4">
           <SidebarTrigger aria-label="Toggle navigation" />
           <div className="ml-auto flex items-center gap-1">
+            <NotificationBell
+              initialUnread={unread}
+              allHref={isStaff(user.role) ? "/admin/notifications" : "/notifications"}
+            />
             <ThemeToggle />
             <UserMenu name={user.name} idNumber={user.idNumber} role={user.role} photoUrl={photoUrl} />
           </div>

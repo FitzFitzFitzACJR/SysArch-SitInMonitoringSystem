@@ -1,8 +1,11 @@
 import { Clock } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { PageHeader } from "@/components/layout/app-shell";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AnnouncementCard } from "@/features/announcements/components/announcement-card";
+import { listAnnouncementsForStudent } from "@/features/announcements/service";
 import { ReportIssueDialog } from "@/features/issues/components/report-issue-dialog";
 import { getCurrentSemester } from "@/features/semesters/queries";
 import { getSettings } from "@/features/settings/queries";
@@ -11,6 +14,7 @@ import { StudentQr } from "@/features/sit-ins/components/student-qr";
 import { getActiveSitInFor } from "@/features/sit-ins/queries";
 import { sweepIfStale } from "@/features/sit-ins/service";
 import { db } from "@/lib/db";
+import { dateTimeFormatter } from "@/lib/format";
 import { requireStudent } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -19,7 +23,7 @@ export default async function StudentDashboard() {
   const session = await requireStudent();
   await sweepIfStale();
   const settings = await getSettings();
-  const [student, semester, active] = await Promise.all([
+  const [student, semester, active, announcements] = await Promise.all([
     db.user.findUniqueOrThrow({
       where: { id: session.id },
       select: {
@@ -35,6 +39,7 @@ export default async function StudentDashboard() {
     }),
     getCurrentSemester(settings.timezone),
     getActiveSitInFor(session.id),
+    listAnnouncementsForStudent(session.id, 3),
   ]);
 
   const pointsToNext = settings.pointsPerSession - (Math.max(student.pointsBalance, 0) % settings.pointsPerSession);
@@ -87,6 +92,20 @@ export default async function StudentDashboard() {
             />
             <StatCard label="Lifetime points" value={student.lifetimePoints} />
           </div>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Announcements</CardTitle>
+              <Link href="/announcements" className="text-muted-foreground text-sm hover:underline">
+                See all
+              </Link>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              {announcements.length === 0 && <p className="text-muted-foreground text-sm">Nothing new.</p>}
+              {announcements.map((a) => (
+                <AnnouncementCard key={a.id} a={a} dateFormat={dateTimeFormatter(settings.timezone)} />
+              ))}
+            </CardContent>
+          </Card>
         </div>
 
         <Card>

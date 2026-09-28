@@ -20,3 +20,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Forms submit `form.getValues()` (raw input), not the resolver's parsed output: the action re-parses with the same schema, and transforms (e.g. "07:00" → 420, "" → null) must only run once.
 - Never select `passwordHash` into anything that reaches a client component; expose a derived flag (e.g. `passwordPending`).
 - Accounts created by staff get `UNUSABLE_PASSWORD` plus an emailed set-password link (`sendPasswordLink`); never generate or send plain-text passwords.
+- Notifications go through `notify()` / `notifyStaff()` inside the event's transaction. Whether a type is also emailed is decided in one place (`EMAILED` in features/notifications/service.ts); emails leave via the outbox, never directly.
+- Uploaded files are served with a server-chosen Content-Type, `attachment` for non-images and a sandbox CSP. Add new upload types to an allowlist, never trust the browser's MIME type.
+- User-written text (announcements, feedback, descriptions) is rendered as plain text with `whitespace-pre-wrap`, never as HTML.

@@ -6,3 +6,21 @@ export function dateTimeFormatter(timeZone: string) {
 export function dateFormatter(timeZone: string) {
   return new Intl.DateTimeFormat("en-PH", { dateStyle: "medium", timeZone });
 }
+
+/** An instant as "YYYY-MM-DDTHH:MM" in `timeZone`, for <input type="datetime-local">. */
+export function toLocalInputValue(instant: Date, timeZone: string) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+      .formatToParts(instant)
+      .map((p) => [p.type, p.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
