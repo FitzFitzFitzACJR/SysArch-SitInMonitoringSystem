@@ -1,0 +1,9 @@
+import { AppShell } from "@/components/layout/app-shell";
+import { requireStaff } from "@/lib/session";
+
+// Layouts don't re-render on client-side navigation, so each page also calls its own
+// requireStaff(permission) guard; this one just decides which shell to render.
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  const user = await requireStaff();
+  return <AppShell user={user}>{children}</AppShell>;
+}

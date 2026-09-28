@@ -1,0 +1,501 @@
+// CCS Sit-In Monitoring System — data model.
+//
+// Conventions:
+// - Times of day are stored as "minutes after midnight" (Int) in the lab's timezone (Settings.timezone).
+// - "In use" / "reserved" computer states are derived from SitIn/Reservation rows, never stored.
+// - User.remainingSessions / pointsBalance / lifetimePoints are running totals of PointsLog;
+//   they are only ever changed in the same transaction that writes a PointsLog row.
+// - Rules Prisma can't express (partial unique indexes, CHECK constraints) live in the
+//   migration SQL — see prisma/migrations/*_init/migration.sql.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  STUDENT
+  LAB_STAFF
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum ComputerState {
+  ACTIVE
+  LOCKED
+  MAINTENANCE
+}
+
+enum SitInStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum SitInEndReason {
+  STAFF
+  TIME_LIMIT
+  LAB_CLOSING
+}
+
+enum ReservationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  NO_SHOW
+  FULFILLED
+}
+
+enum LedgerReason {
+  SIT_IN_START
+  SIT_IN_REFUND
+  SIT_IN_REWARD
+  MANUAL_POINTS
+  MANUAL_SESSIONS
+  POINTS_CONVERSION
+  NO_SHOW_PENALTY
+  SEMESTER_RESET
+  LEGACY_IMPORT
+}
+
+enum NotificationType {
+  RESERVATION
+  SIT_IN
+  POINTS
+  ANNOUNCEMENT
+  ISSUE
+  SYSTEM
+}
+
+enum FeedbackCategory {
+  EQUIPMENT
+  FACILITIES
+  STAFF
+  SERVICES
+  OTHER
+}
+
+enum IssueCategory {
+  NO_INTERNET
+  PERIPHERAL
+  DISPLAY
+  SOFTWARE
+  HARDWARE
+  OTHER
+}
+
+enum IssueStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum AnnouncementAudience {
+  ALL
+  LAB
+  COURSE
+}
+
+model User {
+  id                 String     @id @default(cuid())
+  idNumber           String     @unique
+  email              String     @unique
+  firstName          String
+  middleName         String?
+  lastName           String
+  role               Role       @default(STUDENT)
+  status             UserStatus @default(ACTIVE) // students are archived, never hard-deleted
+  courseId           String?
+  yearLevel          Int? // 1–4, students only (CHECK in migration)
+  photoUrl           String?
+  passwordHash       String // argon2id; legacy bcrypt hashes are upgraded on next login
+  mustChangePassword Boolean    @default(false)
+  passwordChangedAt  DateTime   @default(now()) // sessions issued before this are rejected
+  failedLogins       Int        @default(0)
+  lockedUntil        DateTime?
+  qrToken            String     @unique @default(cuid()) // QR encodes this, not idNumber; rotatable
+  remainingSessions  Int        @default(0)
+  pointsBalance      Int        @default(0) // points not yet converted into sessions; may go negative
+  lifetimePoints     Int        @default(0)
+  rulesAcceptedVer   Int? // compared with Settings.rulesVersion
+  lastLoginAt        DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  course         Course?              @relation(fields: [courseId], references: [id])
+  sitIns         SitIn[]              @relation("StudentSitIns")
+  sitInsStarted  SitIn[]              @relation("SitInStartedBy")
+  sitInsEnded    SitIn[]              @relation("SitInEndedBy")
+  reservations   Reservation[]        @relation("StudentReservations")
+  decisions      Reservation[]        @relation("ReservationDecidedBy")
+  pointsLog      PointsLog[]          @relation("LedgerUser")
+  pointsGiven    PointsLog[]          @relation("LedgerActor")
+  notifications  Notification[]
+  feedback       Feedback[]
+  issuesReported ComputerIssue[]      @relation("IssueReporter")
+  issuesResolved ComputerIssue[]      @relation("IssueResolver")
+  announcements  Announcement[]
+  resources      Resource[]
+  auditLogs      AuditLog[]
+  resetTokens    PasswordResetToken[]
+  settingsEdits  Settings[]
+
+  @@index([role, status])
+  @@index([lastName, firstName])
+}
+
+model Course {
+  id       String  @id @default(cuid())
+  code     String  @unique // BSIT, BSA, BSCS, BSCRIM
+  name     String
+  isActive Boolean @default(true)
+
+  users         User[]
+  announcements Announcement[]
+}
+
+model Language {
+  id        String  @id @default(cuid())
+  name      String  @unique // C#, C, Java, ASP.Net, PHP, Other
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  sitIns       SitIn[]
+  reservations Reservation[]
+}
+
+model Semester {
+  id               String    @id @default(cuid())
+  name             String    @unique // "1st Semester AY 2026–2027"
+  startsOn         DateTime  @db.Date
+  endsOn           DateTime  @db.Date
+  sessionAllotment Int // sessions every active student gets when the semester starts
+  resetAppliedAt   DateTime? // set once the start-of-semester reset has run (makes it idempotent)
+  createdAt        DateTime  @default(now())
+
+  sitIns       SitIn[]
+  reservations Reservation[]
+  schedules    LabSchedule[]
+  pointsLog    PointsLog[]
+}
+
+model Lab {
+  id          String   @id @default(cuid())
+  code        String   @unique // "524", "MAC"
+  name        String
+  gridColumns Int      @default(10) // live-map layout
+  opensAt     Int? // minutes after midnight; null → Settings.labOpensAt
+  closesAt    Int? // null → Settings.labClosesAt
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  computers     Computer[]
+  sitIns        SitIn[]
+  reservations  Reservation[]
+  schedules     LabSchedule[]
+  feedback      Feedback[]
+  announcements Announcement[]
+}
+
+model Computer {
+  id        String        @id @default(cuid())
+  labId     String
+  number    Int
+  state     ComputerState @default(ACTIVE)
+  note      String?
+  updatedAt DateTime      @updatedAt
+
+  lab          Lab             @relation(fields: [labId], references: [id])
+  sitIns       SitIn[]
+  reservations Reservation[]
+  issues       ComputerIssue[]
+
+  @@unique([labId, number])
+}
+
+model TimeSlot {
+  id          String  @id @default(cuid())
+  label       String // "8:00 AM – 9:30 AM"
+  startMinute Int
+  endMinute   Int
+  isActive    Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  reservations Reservation[]
+
+  @@unique([startMinute, endMinute])
+}
+
+model SitIn {
+  id            String          @id @default(cuid())
+  studentId     String
+  labId         String
+  computerId    String?
+  languageId    String
+  purpose       String?
+  semesterId    String
+  reservationId String?         @unique
+  status        SitInStatus     @default(ACTIVE)
+  startedAt     DateTime        @default(now())
+  endsAt        DateTime // time limit snapshot taken at check-in
+  warnedAt      DateTime?
+  endedAt       DateTime?
+  endReason     SitInEndReason?
+  rewarded      Boolean         @default(false)
+  startedById   String
+  endedById     String?
+
+  student     User            @relation("StudentSitIns", fields: [studentId], references: [id])
+  startedBy   User            @relation("SitInStartedBy", fields: [startedById], references: [id])
+  endedBy     User?           @relation("SitInEndedBy", fields: [endedById], references: [id])
+  lab         Lab             @relation(fields: [labId], references: [id])
+  computer    Computer?       @relation(fields: [computerId], references: [id])
+  language    Language        @relation(fields: [languageId], references: [id])
+  semester    Semester        @relation(fields: [semesterId], references: [id])
+  reservation Reservation?    @relation(fields: [reservationId], references: [id])
+  pointsLog   PointsLog[]
+  feedback    Feedback[]
+  issues      ComputerIssue[]
+
+  @@index([studentId, status])
+  @@index([labId, status])
+  @@index([status, endsAt])
+  @@index([startedAt])
+}
+
+model Reservation {
+  id             String            @id @default(cuid())
+  studentId      String
+  labId          String
+  computerId     String? // optional; without it, lab capacity is checked instead
+  timeSlotId     String
+  date           DateTime          @db.Date
+  languageId     String
+  purpose        String
+  semesterId     String
+  status         ReservationStatus @default(PENDING)
+  decidedById    String?
+  decidedAt      DateTime?
+  decisionNote   String?
+  reminderSentAt DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  student   User      @relation("StudentReservations", fields: [studentId], references: [id])
+  decidedBy User?     @relation("ReservationDecidedBy", fields: [decidedById], references: [id])
+  lab       Lab       @relation(fields: [labId], references: [id])
+  computer  Computer? @relation(fields: [computerId], references: [id])
+  timeSlot  TimeSlot  @relation(fields: [timeSlotId], references: [id])
+  language  Language  @relation(fields: [languageId], references: [id])
+  semester  Semester  @relation(fields: [semesterId], references: [id])
+  sitIn     SitIn?
+
+  @@index([labId, date, timeSlotId, status])
+  @@index([studentId, status])
+}
+
+// Class schedules. Reservations that overlap a scheduled class are blocked.
+model LabSchedule {
+  id          String @id @default(cuid())
+  labId       String
+  semesterId  String
+  dayOfWeek   Int // 0 = Sunday
+  startMinute Int
+  endMinute   Int
+  courseCode  String
+  instructor  String
+
+  lab      Lab      @relation(fields: [labId], references: [id])
+  semester Semester @relation(fields: [semesterId], references: [id])
+
+  @@index([labId, dayOfWeek])
+}
+
+model Resource {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  url         String? // external link, or…
+  fileKey     String? // …uploaded file (storage adapter key)
+  fileName    String?
+  mimeType    String?
+  isActive    Boolean  @default(true)
+  createdById String
+  createdAt   DateTime @default(now())
+
+  createdBy User @relation(fields: [createdById], references: [id])
+}
+
+model Announcement {
+  id         String               @id @default(cuid())
+  title      String
+  body       String
+  authorId   String
+  pinned     Boolean              @default(false)
+  publishAt  DateTime             @default(now()) // in the future = scheduled
+  expiresAt  DateTime?
+  audience   AnnouncementAudience @default(ALL)
+  labId      String?
+  courseId   String?
+  archivedAt DateTime?
+  createdAt  DateTime             @default(now())
+
+  author User    @relation(fields: [authorId], references: [id])
+  lab    Lab?    @relation(fields: [labId], references: [id])
+  course Course? @relation(fields: [courseId], references: [id])
+
+  @@index([archivedAt, publishAt])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+model Feedback {
+  id          String           @id @default(cuid())
+  studentId   String
+  labId       String
+  sitInId     String?
+  rating      Int // 1–5 (CHECK in migration)
+  category    FeedbackCategory
+  comments    String
+  suggestions String?
+  readAt      DateTime?
+  createdAt   DateTime         @default(now())
+
+  student User   @relation(fields: [studentId], references: [id])
+  lab     Lab    @relation(fields: [labId], references: [id])
+  sitIn   SitIn? @relation(fields: [sitInId], references: [id])
+
+  @@index([readAt, createdAt])
+}
+
+model ComputerIssue {
+  id           String        @id @default(cuid())
+  computerId   String
+  reporterId   String
+  sitInId      String?
+  category     IssueCategory
+  description  String
+  status       IssueStatus   @default(OPEN)
+  resolvedById String?
+  resolvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+
+  computer   Computer @relation(fields: [computerId], references: [id])
+  reporter   User     @relation("IssueReporter", fields: [reporterId], references: [id])
+  resolvedBy User?    @relation("IssueResolver", fields: [resolvedById], references: [id])
+  sitIn      SitIn?   @relation(fields: [sitInId], references: [id])
+
+  @@index([status, createdAt])
+}
+
+// Ledger for both points and sessions.
+model PointsLog {
+  id            String       @id @default(cuid())
+  userId        String
+  pointsDelta   Int          @default(0)
+  sessionsDelta Int          @default(0)
+  reason        LedgerReason
+  note          String?
+  actorId       String? // null = system (cron job, automatic conversion)
+  sitInId       String?
+  semesterId    String?
+  createdAt     DateTime     @default(now())
+
+  user     User      @relation("LedgerUser", fields: [userId], references: [id])
+  actor    User?     @relation("LedgerActor", fields: [actorId], references: [id])
+  sitIn    SitIn?    @relation(fields: [sitInId], references: [id])
+  semester Semester? @relation(fields: [semesterId], references: [id])
+
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  action     String // "sitIn.end", "computer.lock", "settings.update", …
+  entityType String
+  entityId   String?
+  details    Json? // e.g. before/after for updates
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([entityType, entityId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique // only the SHA-256 of the emailed token is stored
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Per-IP rate limiting (per-account lockout lives on User).
+model LoginAttempt {
+  id         String   @id @default(cuid())
+  identifier String
+  ip         String
+  success    Boolean
+  createdAt  DateTime @default(now())
+
+  @@index([ip, createdAt])
+}
+
+// Single row (id = 1). Typed columns, validated by features/settings/schemas.ts.
+model Settings {
+  id                         Int      @id @default(1)
+  timezone                   String   @default("Asia/Manila")
+  defaultSessions            Int      @default(10)
+  sitInRewardPoints          Int      @default(1)
+  pointsPerSession           Int      @default(3)
+  maxSitInMinutes            Int      @default(180)
+  warnBeforeMinutes          Int      @default(10)
+  labOpensAt                 Int      @default(420) // 07:00
+  labClosesAt                Int      @default(1080) // 18:00
+  requireReservationApproval Boolean  @default(true)
+  reservationMaxDaysAhead    Int      @default(14)
+  reminderMinutesBefore      Int      @default(60)
+  noShowGraceMinutes         Int      @default(15)
+  noShowPenaltyPoints        Int      @default(0) // 0 = no penalty
+  noShowBlockThreshold       Int? // block new reservations after N no-shows per semester; null = never
+  maxLoginAttempts           Int      @default(5)
+  lockoutMinutes             Int      @default(15)
+  sessionMaxAgeHours         Int      @default(8)
+  rulesText                  String   @default("")
+  rulesVersion               Int      @default(1)
+  updatedAt                  DateTime @updatedAt
+  updatedById                String?
+
+  updatedBy User? @relation(fields: [updatedById], references: [id])
+}

@@ -1,0 +1,21 @@
+import type { Role } from "@/generated/prisma/enums";
+import { can, type Permission } from "@/lib/permissions";
+
+// Icons are referenced by name so this list stays serialisable (server → client component).
+export type NavIcon = "dashboard" | "settings";
+
+export type NavItem = { href: string; label: string; icon: NavIcon; permission?: Permission };
+
+// Entries are added here as each phase ships its pages.
+const STUDENT_NAV: NavItem[] = [{ href: "/dashboard", label: "Dashboard", icon: "dashboard" }];
+
+const STAFF_NAV: NavItem[] = [
+  { href: "/admin", label: "Dashboard", icon: "dashboard" },
+  { href: "/admin/settings", label: "Settings", icon: "settings", permission: "settings:manage" },
+];
+
+/** Only links the user can actually use are shown; the pages enforce the same rules server-side. */
+export function navFor(role: Role): NavItem[] {
+  const items = role === "STUDENT" ? STUDENT_NAV : STAFF_NAV;
+  return items.filter((item) => !item.permission || can(role, item.permission));
+}
