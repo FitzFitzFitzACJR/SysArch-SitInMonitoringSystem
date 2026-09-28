@@ -13,7 +13,15 @@ export function isLegacyHash(passwordHash: string): boolean {
   return /^\$2[aby]\$/.test(passwordHash);
 }
 
+/**
+ * Stored for accounts created by staff until the owner sets a password through their
+ * emailed link. It can never match: verifyPassword rejects anything starting with "!".
+ * (Also avoids running argon2 once per row when importing thousands of students.)
+ */
+export const UNUSABLE_PASSWORD = "!unset";
+
 export async function verifyPassword(passwordHash: string, password: string): Promise<boolean> {
+  if (passwordHash.startsWith("!")) return false;
   try {
     if (isLegacyHash(passwordHash)) {
       return await bcrypt.compare(password, passwordHash.replace(/^\$2y\$/, "$2b$"));

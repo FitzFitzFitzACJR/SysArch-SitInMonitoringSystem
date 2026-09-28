@@ -2,7 +2,7 @@
 
 import { KeyRound, LogOut } from "lucide-react";
 import Link from "next/link";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -16,7 +16,17 @@ import { logoutAction } from "@/features/auth/actions";
 
 const ROLE_LABELS = { STUDENT: "Student", LAB_STAFF: "Lab staff", SUPER_ADMIN: "Super admin" } as const;
 
-export function UserMenu({ name, idNumber, role }: { name: string; idNumber: string; role: keyof typeof ROLE_LABELS }) {
+export function UserMenu({
+  name,
+  idNumber,
+  role,
+  photoUrl,
+}: {
+  name: string;
+  idNumber: string;
+  role: keyof typeof ROLE_LABELS;
+  photoUrl: string | null;
+}) {
   const initials = name
     .split(" ")
     .map((part) => part[0])
@@ -29,6 +39,7 @@ export function UserMenu({ name, idNumber, role }: { name: string; idNumber: str
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" className="h-9 gap-2 px-2" aria-label="Account menu">
           <Avatar className="size-7">
+            {photoUrl && <AvatarImage src={photoUrl} alt="" className="object-cover" />}
             <AvatarFallback className="text-xs">{initials}</AvatarFallback>
           </Avatar>
           <span className="hidden text-sm sm:inline">{name}</span>

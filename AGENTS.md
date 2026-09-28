@@ -17,3 +17,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - No business values are hardcoded; read them from `getSettings()`.
 - Pages call `requireStudent()` / `requireStaff(permission)` themselves; layouts don't re-run on client navigation.
 - Rules Prisma can't express (partial unique indexes, CHECKs) go in migration SQL. Keep them in sync with the service checks.
+- Forms submit `form.getValues()` (raw input), not the resolver's parsed output: the action re-parses with the same schema, and transforms (e.g. "07:00" → 420, "" → null) must only run once.
+- Never select `passwordHash` into anything that reaches a client component; expose a derived flag (e.g. `passwordPending`).
+- Accounts created by staff get `UNUSABLE_PASSWORD` plus an emailed set-password link (`sendPasswordLink`); never generate or send plain-text passwords.

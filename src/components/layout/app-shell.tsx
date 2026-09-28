@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { db } from "@/lib/db";
 import type { SessionUser } from "@/lib/session";
 import { AppSidebar } from "./app-sidebar";
 import { navFor } from "./nav";
@@ -7,7 +8,8 @@ import { ThemeToggle } from "./theme-toggle";
 import { UserMenu } from "./user-menu";
 
 /** Sidebar layout shared by the student and staff areas (collapses to a drawer on phones). */
-export function AppShell({ user, children }: { user: SessionUser; children: ReactNode }) {
+export async function AppShell({ user, children }: { user: SessionUser; children: ReactNode }) {
+  const { photoUrl } = await db.user.findUniqueOrThrow({ where: { id: user.id }, select: { photoUrl: true } });
   return (
     <SidebarProvider>
       <a
@@ -22,7 +24,7 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
           <SidebarTrigger aria-label="Toggle navigation" />
           <div className="ml-auto flex items-center gap-1">
             <ThemeToggle />
-            <UserMenu name={user.name} idNumber={user.idNumber} role={user.role} />
+            <UserMenu name={user.name} idNumber={user.idNumber} role={user.role} photoUrl={photoUrl} />
           </div>
         </header>
         <main id="main" className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">

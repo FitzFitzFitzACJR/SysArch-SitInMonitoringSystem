@@ -2,15 +2,21 @@ import type { Role } from "@/generated/prisma/enums";
 import { can, type Permission } from "@/lib/permissions";
 
 // Icons are referenced by name so this list stays serialisable (server → client component).
-export type NavIcon = "dashboard" | "settings";
+export type NavIcon = "dashboard" | "settings" | "students" | "labs" | "staff" | "profile";
 
 export type NavItem = { href: string; label: string; icon: NavIcon; permission?: Permission };
 
 // Entries are added here as each phase ships its pages.
-const STUDENT_NAV: NavItem[] = [{ href: "/dashboard", label: "Dashboard", icon: "dashboard" }];
+const STUDENT_NAV: NavItem[] = [
+  { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
+  { href: "/profile", label: "Profile", icon: "profile" },
+];
 
 const STAFF_NAV: NavItem[] = [
   { href: "/admin", label: "Dashboard", icon: "dashboard" },
+  { href: "/admin/students", label: "Students", icon: "students", permission: "student:edit" },
+  { href: "/admin/labs", label: "Labs & computers", icon: "labs", permission: "computer:manage" },
+  { href: "/admin/staff", label: "Staff accounts", icon: "staff", permission: "staff:manage" },
   { href: "/admin/settings", label: "Settings", icon: "settings", permission: "settings:manage" },
 ];
 

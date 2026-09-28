@@ -1,6 +1,6 @@
 "use client";
 
-import { LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
+import { CircleUser, LayoutDashboard, Monitor, Settings, ShieldCheck, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Brand } from "@/components/brand";
@@ -17,7 +17,14 @@ import {
 } from "@/components/ui/sidebar";
 import type { NavIcon, NavItem } from "./nav";
 
-const ICONS: Record<NavIcon, LucideIcon> = { dashboard: LayoutDashboard, settings: Settings };
+const ICONS: Record<NavIcon, LucideIcon> = {
+  dashboard: LayoutDashboard,
+  settings: Settings,
+  students: Users,
+  labs: Monitor,
+  staff: ShieldCheck,
+  profile: CircleUser,
+};
 
 export function AppSidebar({ items }: { items: NavItem[] }) {
   const pathname = usePathname();

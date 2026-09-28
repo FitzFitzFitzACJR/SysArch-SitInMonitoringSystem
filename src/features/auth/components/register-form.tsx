@@ -28,8 +28,9 @@ export function RegisterForm({ courses }: { courses: { id: string; code: string;
     },
   });
 
-  async function onSubmit(values: RegisterInput) {
-    applyActionResult(form, await registerAction(values));
+  // Send raw form values; the action re-parses them with the same schema.
+  async function onSubmit() {
+    applyActionResult(form, await registerAction(form.getValues()));
   }
 
   const courseOptions = courses.map((c) => ({ value: c.id, label: `${c.code} — ${c.name}` }));

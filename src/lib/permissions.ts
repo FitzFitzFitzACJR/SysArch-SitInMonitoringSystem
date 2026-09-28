@@ -5,6 +5,7 @@ import type { Role } from "@/generated/prisma/enums";
 export const PERMISSIONS = [
   "sitIn:manage",
   "computer:manage",
+  "lab:manage",
   "issue:resolve",
   "reservation:decide",
   "feedback:read",

@@ -2,6 +2,7 @@ import "server-only";
 import type { Tx } from "@/lib/db";
 import { db } from "@/lib/db";
 import { dateOnlyInTz } from "@/lib/time";
+import { getSettings } from "@/features/settings/queries";
 
 /** The semester whose date range contains `at` (in the lab's timezone), if any. */
 export function getCurrentSemester(timeZone: string, at = new Date(), client: Tx | typeof db = db) {
@@ -10,4 +11,11 @@ export function getCurrentSemester(timeZone: string, at = new Date(), client: Tx
     where: { startsOn: { lte: today }, endsOn: { gte: today } },
     orderBy: { startsOn: "desc" },
   });
+}
+
+/** How many sessions a student gets right now: the current semester's allotment, else the default. */
+export async function getSessionAllotment(client: Tx | typeof db = db) {
+  const settings = await getSettings();
+  const semester = await getCurrentSemester(settings.timezone, new Date(), client);
+  return { sessions: semester?.sessionAllotment ?? settings.defaultSessions, semesterId: semester?.id ?? null };
 }

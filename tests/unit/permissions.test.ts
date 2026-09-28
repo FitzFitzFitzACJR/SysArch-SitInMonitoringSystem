@@ -21,6 +21,7 @@ describe("permissions", () => {
     expect(can("LAB_STAFF", "student:delete")).toBe(false);
     expect(can("LAB_STAFF", "semester:manage")).toBe(false);
     expect(can("LAB_STAFF", "audit:view")).toBe(false);
+    expect(can("LAB_STAFF", "lab:manage")).toBe(false);
   });
 
   it("routes each role to its home", () => {

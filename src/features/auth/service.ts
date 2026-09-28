@@ -1,13 +1,19 @@
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { sendEmail } from "@/lib/email";
 import { DomainError } from "@/lib/errors";
 import { hashPassword, isLegacyHash, verifyAgainstDummy, verifyPassword } from "@/lib/password";
 import { getSettings } from "@/features/settings/queries";
-import { getCurrentSemester } from "@/features/semesters/queries";
+import { getSessionAllotment } from "@/features/semesters/queries";
+import { adjustBalance } from "@/features/points/ledger";
+import { uniqueViolation } from "@/lib/prisma-errors";
+
+export const UNIQUE_MESSAGES = {
+  email: "That email is already registered.",
+  idNumber: "That ID number is already registered.",
+};
 import type {
   ChangePasswordInput,
   ForgotPasswordInput,
@@ -106,12 +112,10 @@ export async function verifyLogin({ idNumber, password }: LoginInput, ip: string
 // ---------------------------------------------------------------------------
 
 export async function registerStudent(input: RegisterInput) {
-  const settings = await getSettings();
   const course = await db.course.findFirst({ where: { id: input.courseId, isActive: true } });
   if (!course) throw new DomainError("Select a valid course.", { courseId: ["Select a valid course"] });
 
-  const semester = await getCurrentSemester(settings.timezone);
-  const allotment = semester?.sessionAllotment ?? settings.defaultSessions;
+  const allotment = await getSessionAllotment();
   const passwordHash = await hashPassword(input.password);
 
   try {
@@ -126,30 +130,19 @@ export async function registerStudent(input: RegisterInput) {
           courseId: course.id,
           yearLevel: input.yearLevel,
           passwordHash,
-          remainingSessions: allotment,
         },
       });
-      // Every session balance change goes through the ledger, including the first one.
-      await tx.pointsLog.create({
-        data: {
-          userId: user.id,
-          sessionsDelta: allotment,
-          reason: "SEMESTER_RESET",
-          note: "Initial session allotment",
-          semesterId: semester?.id,
-        },
+      await adjustBalance(tx, {
+        userId: user.id,
+        sessionsDelta: allotment.sessions,
+        reason: "SEMESTER_RESET",
+        note: "Initial session allotment",
+        semesterId: allotment.semesterId,
       });
       return user;
     });
   } catch (e) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
-      const target = String(e.meta?.target ?? "");
-      if (target.includes("email")) {
-        throw new DomainError("That email is already registered.", { email: ["Already registered"] });
-      }
-      throw new DomainError("That ID number is already registered.", { idNumber: ["Already registered"] });
-    }
-    throw e;
+    throw uniqueViolation(e, UNIQUE_MESSAGES) ?? e;
   }
 }
 
@@ -189,21 +182,44 @@ export async function requestPasswordReset({ email }: ForgotPasswordInput): Prom
   });
   if (recent) return;
 
+  await sendPasswordLink(user, "reset");
+}
+
+const INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Emails a one-time link to set a password. Used for "forgot password" and for accounts
+ * created by staff (single add, bulk import, staff invites), so nobody ever sends or
+ * stores a plain-text initial password.
+ */
+export async function sendPasswordLink(
+  user: { id: string; email: string; firstName: string; idNumber: string },
+  kind: "reset" | "invite",
+) {
   const token = randomBytes(32).toString("base64url");
+  const ttl = kind === "reset" ? RESET_TOKEN_TTL_MS : INVITE_TOKEN_TTL_MS;
   await db.$transaction([
     // Only the newest link works.
     db.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } }),
     db.passwordResetToken.create({
-      data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS) },
+      data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + ttl) },
     }),
   ]);
 
   const link = `${env.APP_URL}/reset-password?token=${token}`;
-  await sendEmail({
-    to: user.email,
-    subject: "Reset your CCS Sit-In password",
-    text: `Hi ${user.firstName},\n\nUse this link to set a new password. It expires in 1 hour.\n\n${link}\n\nIf you didn't ask for this, you can ignore this email.`,
-  });
+  await sendEmail(
+    kind === "reset"
+      ? {
+          to: user.email,
+          subject: "Reset your CCS Sit-In password",
+          text: `Hi ${user.firstName},\n\nUse this link to set a new password. It expires in 1 hour.\n\n${link}\n\nIf you didn't ask for this, you can ignore this email.`,
+        }
+      : {
+          to: user.email,
+          subject: "Your CCS Sit-In account is ready",
+          text: `Hi ${user.firstName},\n\nAn account has been created for you on the CCS Sit-In Monitoring System.\nYour ID number is ${user.idNumber}. Set your password with this link (valid for 7 days):\n\n${link}\n`,
+        },
+  );
 }
 
 export async function resetPassword({ token, newPassword }: ResetPasswordInput) {
